@@ -23,6 +23,18 @@ MPLCONFIGDIR=output/7_40_analysis/.mpl \
 python scripts/analyze_7_40.py --days 14 --out-dir output/7_40_analysis
 ```
 
+Full local run:
+
+```bash
+MPLCONFIGDIR=output/7_40_analysis/.mpl \
+python scripts/analyze_7_40.py --out-dir output/7_40_analysis/full_dataset --backup-results
+```
+
+The script has two framework layers:
+
+- public blog/channel statistics parser;
+- team-chat preview and recommendation parser.
+
 See `docs/7-40-pipeline.md` for setup, inputs, outputs, current parser quality, and next steps.
 
 ## Local Setup

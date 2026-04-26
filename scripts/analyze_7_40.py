@@ -5,8 +5,12 @@ import re
 import subprocess
 import argparse
 import html
+import sys
+import hashlib
+import zipfile
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -29,8 +33,13 @@ PROJECT_ROOT = find_project_root()
 PUBLIC_EXPORT = Path("~/Downloads/Telegram Desktop/ChatExport_2026-04-26").expanduser()
 PRIVATE_EXPORT = Path("~/Downloads/Telegram Desktop/ChatExport_2026-04-26 (2)").expanduser()
 DEFAULT_OUT = PROJECT_ROOT / "output" / "7_40_analysis"
+DEFAULT_BACKUP_DIR = PROJECT_ROOT / "output" / "7_40_analysis" / "backups"
 OUT = DEFAULT_OUT
 OUT.mkdir(parents=True, exist_ok=True)
+
+
+def log_step(message: str) -> None:
+    print(f"[7-40] {message}", file=sys.stderr, flush=True)
 
 
 VARIANT_LABELS = {
@@ -185,6 +194,63 @@ def load_messages(export_dir: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def empty_message_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["id", "date", "date_raw", "from", "from_id", "type", "text", "photo"])
+
+
+def is_personal_tournament_text(text: str) -> bool:
+    low = text.lower()
+    personal_markers = [
+        "личный турнир",
+        "личного турнира",
+        "л/т",
+        " фэ.",
+        " фэ ",
+        "фэнтези",
+        "бомбардир",
+        "символическая сборная",
+        "каждый с каждым",
+    ]
+    return any(marker in low for marker in personal_markers)
+
+
+def is_team_competition_text(text: str) -> bool:
+    low = text.lower()
+    if is_personal_tournament_text(text):
+        return False
+    positive_markers = [
+        "командн",
+        " кч",
+        "кч.",
+        "тур кч",
+        "командного чемпионата",
+        "командный чемпионат",
+        "кубка",
+        "кубок",
+        "чемпионата",
+        "составы команд",
+        "составы играющих команд",
+    ]
+    return any(marker in low for marker in positive_markers)
+
+
+def is_public_blog_context_text(text: str) -> bool:
+    low = text.lower()
+    if "мдп" not in low or is_personal_tournament_text(text):
+        return False
+    if is_team_competition_text(text):
+        return True
+    context_markers = ["следующий мдп", "стартовый мдп", "мдп:", "мдп "]
+    return any(marker in low for marker in context_markers)
+
+
+def is_public_blog_stats_caption(text: str) -> bool:
+    low = text.lower()
+    if is_personal_tournament_text(text):
+        return False
+    return any(marker in low for marker in ["играем", "итоги", "составы", "результат"])
+
+
 def strip_emoji(text: str) -> str:
     return "".join(ch for ch in text if ch.isalnum() or ch in " -—–.():,_/'\"ёЁіІїЇєЄQEDqed")
 
@@ -201,8 +267,11 @@ def parse_match_from_text(text: str) -> str | None:
         before_deadline = re.split(r"\bДедлайн\b|\bдедлайн\b", s, maxsplit=1)[0]
         chunks = [c.strip() for c in before_deadline.split(".") if "-" in c]
         cand = chunks[-1] if chunks else before_deadline
+    if re.search(r"\bМДП\b", cand, flags=re.I):
+        cand = re.split(r"\bМДП\b\s*:?", cand, flags=re.I)[-1]
     cand = re.sub(r"^\d{1,2}\.\d{1,2}\.?", "", cand).strip()
     cand = re.sub(r"^\d+\s*(?:й|ый|ой)?\s*тур\.?", "", cand, flags=re.I).strip()
+    cand = re.sub(r"^(?:на|матч|игра|пройдет|пройдут|состоится|состоятся)\s+", "", cand, flags=re.I).strip()
     cand = re.sub(r"^(?:Следующий|Наш следующий|Стартовый)\s*", "", cand, flags=re.I).strip(" .:")
     m = re.search(r"([A-Za-zА-Яа-яЁёІіЇїЄє0-9 .'\"]+?)\s*-\s*([A-Za-zА-Яа-яЁёІіЇїЄє0-9 .'\"]+)", cand)
     if not m:
@@ -265,25 +334,124 @@ def infer_competition(text: str, match: str | None) -> str:
     if hits:
         return sorted(hits, key=lambda x: x[0])[0][1]
     if match:
-        epl_teams = [
-            "Арсенал",
-            "Тоттенхэм",
-            "Вест Хэм",
-            "Эвертон",
-            "Ноттингем Форест",
-            "Манчестер Сити",
-            "Ливерпуль",
-            "Челси",
-            "Манчестер Юнайтед",
-            "Ньюкасл",
-            "Борнмут",
-            "Лидс",
-            "Сандерленд",
+        national_teams = [
+            "Англия",
+            "Франция",
+            "Аргентина",
+            "Мексика",
+            "США",
+            "Катар",
+            "Эквадор",
+            "Германия",
+            "Нидерланды",
+            "Испания",
+            "Португалия",
+            "Италия",
+            "Хорватия",
+            "Дания",
+            "Сербия",
+            "Австрия",
+            "Норвегия",
+            "Швейцария",
+            "Польша",
+            "Албания",
+            "Греция",
+            "Чехия",
+            "Грузия",
+            "Боливия",
+            "Ирак",
         ]
-        if any(team.lower() in match.lower() for team in epl_teams):
-            return "АПЛ"
-    if match and any(team in match for team in ["Англия", "Франция", "Аргентина", "Мексика", "США", "Катар", "Эквадор"]):
-        return "Сборные"
+        if any(team in match for team in national_teams):
+            return "Сборные"
+        league_team_markers = {
+            "АПЛ": [
+                "Арсенал",
+                "Тоттенхэм",
+                "Вест Хэм",
+                "Эвертон",
+                "Ноттингем Форест",
+                "Манчестер Сити",
+                "Ливерпуль",
+                "Челси",
+                "Манчестер Юнайтед",
+                "Ньюкасл",
+                "Борнмут",
+                "Лидс",
+                "Сандерленд",
+                "Астон Вилла",
+                "Брентфорд",
+                "Брайтон",
+                "Кристал Пэлас",
+                "Лестер",
+                "Вулверхэмптон",
+                "Фулхэм",
+            ],
+            "Серия A": [
+                "Интер",
+                "Милан",
+                "Ювентус",
+                "Наполи",
+                "Лацио",
+                "Аталанта",
+                "Фиорентина",
+                "Торино",
+                "Рома",
+                "Болонья",
+                "Удинезе",
+                "Дженоа",
+                "Сассуоло",
+                "Верона",
+                "Кальяри",
+                "Эмполи",
+            ],
+            "Бундеслига": [
+                "Бавария",
+                "Байер",
+                "Боруссия",
+                "РБ Лейпциг",
+                "Лейпциг",
+                "Айнтрахт",
+                "Хоффенхайм",
+                "Фрайбург",
+                "Штутгарт",
+                "Вольфсбург",
+                "Майнц",
+                "Унион",
+                "Вердер",
+                "Боруссия М",
+            ],
+            "Ла Лига": [
+                "Реал",
+                "Барселона",
+                "Атлетико",
+                "Атлетик",
+                "Севилья",
+                "Вильярреал",
+                "Валенсия",
+                "Бетис",
+                "Реал Сосьедад",
+                "Сельта",
+                "Жирона",
+                "Осасуна",
+                "Райо",
+            ],
+            "Лига 1": ["ПСЖ", "Монако", "Марсель", "Лион", "Лилль", "Ренн", "Брест", "Ницца", "Страсбур", "Ланс", "Нант", "Тулуза"],
+            "Нидерланды": ["Аякс", "ПСВ", "Фейеноорд", "АЗ", "Алкмаар", "Твенте"],
+            "Португалия": ["Порту", "Бенфика", "Спортинг", "Брага"],
+            "Бельгия": ["Брюгге", "Андерлехт", "Юнион Сент", "Юнион"],
+            "Шотландия": ["Селтик", "Рейнджерс"],
+        }
+        match_low = match.lower()
+        league_hits = []
+        for league, teams in league_team_markers.items():
+            n_hits = sum(1 for team in teams if team.lower() in match_low)
+            if n_hits:
+                league_hits.append((n_hits, league))
+        if league_hits:
+            league_hits = sorted(league_hits, reverse=True)
+            if league_hits[0][0] >= 2 or len(league_hits) == 1:
+                return league_hits[0][1]
+            return "Еврокубки"
     return "Не определено"
 
 
@@ -302,7 +470,7 @@ def build_context(public: pd.DataFrame, private: pd.DataFrame, *, restrict_publi
             if (
                 restrict_public_to_team_announcements
                 and source == "public"
-                and ("Анонс" not in row["text"] or "командного чемпионата" not in row["text"])
+                and not is_public_blog_context_text(row["text"])
             ):
                 continue
             match = parse_match_from_text(row["text"])
@@ -339,17 +507,41 @@ def build_context(public: pd.DataFrame, private: pd.DataFrame, *, restrict_publi
         else:
             competition = pub["competition"]
         rows.append({**pub.to_dict(), "competition": competition})
+    if not rows:
+        return pd.DataFrame(columns=ctx.columns)
     return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+
+def build_private_context(private: pd.DataFrame) -> pd.DataFrame:
+    contexts = []
+    for _, row in private.iterrows():
+        match = parse_match_from_text(row["text"])
+        rec = parse_recommended_variants(row["text"])
+        if match or rec:
+            contexts.append(
+                {
+                    "source": "private",
+                    "message_id": row["id"],
+                    "date": row["date"],
+                    "match": match,
+                    "competition": infer_competition(row["text"], match),
+                    "recommended_variants": rec,
+                    "text": row["text"],
+                }
+            )
+    return pd.DataFrame(contexts).sort_values("date").reset_index(drop=True) if contexts else pd.DataFrame()
 
 
 def classify_photo_caption(text: str) -> str | None:
     low = text.lower()
-    if "личный турнир" in low or "бомбардир" in low or "символическая" in low or "каждый с каждым" in low:
+    if is_personal_tournament_text(text):
         return None
-    if "кч" in low and any(k in low for k in ["играем", "составы", "состав"]):
-        return "lineups"
-    if "кч" in low and "итоги" in low:
+    if not is_public_blog_stats_caption(text):
+        return None
+    if any(k in low for k in ["итоги", "результат", "подсвеч"]):
         return "results"
+    if any(k in low for k in ["играем", "составы", "состав"]):
+        return "lineups"
     return None
 
 
@@ -752,9 +944,66 @@ def parse_played_from_result_header(photo_path: Path) -> list[int]:
             cx2 = int(x1 + (col + 1) * (x2 - x1) / 10)
             cy1 = int(y1 + row * (y2 - y1) / 4)
             cy2 = int(y1 + (row + 1) * (y2 - y1) / 4)
+            if cy2 <= cy1 or cx2 <= cx1:
+                continue
             if yellow[cy1:cy2, cx1:cx2].mean() > 0.25:
                 values.append(value)
     return values
+
+
+def parse_played_variants_from_text(text: str) -> list[int]:
+    normalized = clean_ws(text.replace("—", "-").replace("–", "-"))
+    patterns = [
+        r"сыграл[ио]?\s+вариант[ыа]?\s*[:\-]?\s*([0-9][0-9,\-\s]{8,80})",
+        r"зашл[ио]?\s+вариант[ыа]?\s*[:\-]?\s*([0-9][0-9,\-\s]{8,80})",
+    ]
+    candidates = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized, flags=re.I):
+            values = [int(x) for x in re.findall(r"\b(?:[1-9]|[1-3]\d|40)\b", match.group(1))]
+            values = [value for value in values if 1 <= value <= 40]
+            if 5 <= len(values) <= 18:
+                candidates.append(values)
+    if not candidates:
+        return []
+    return max(candidates, key=len)
+
+
+def parse_public_text_results(public: pd.DataFrame, contexts: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, row in public.sort_values(["date", "id"]).iterrows():
+        text = row["text"]
+        if is_personal_tournament_text(text):
+            continue
+        played = parse_played_variants_from_text(text)
+        if not played:
+            continue
+        ctx = latest_context(contexts, row["date"])
+        match = parse_match_from_text(text) or ctx["match"]
+        rows.append(
+            {
+                "message_id": row["id"],
+                "date": row["date"],
+                "match": match,
+                "competition": infer_competition(text, match) if match else ctx["competition"],
+                "photo": "",
+                "played_variants": tuple(played),
+                "result_source": "public_text",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def dedupe_played_result_rows(*frames: pd.DataFrame) -> pd.DataFrame:
+    frames = [frame for frame in frames if frame is not None and not frame.empty]
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    combined["played_key"] = combined["played_variants"].apply(lambda values: tuple(sorted(values)) if isinstance(values, tuple) else tuple())
+    combined["date_day"] = pd.to_datetime(combined["date"]).dt.date
+    combined = combined.sort_values(["date", "result_source"], na_position="last")
+    combined = combined.drop_duplicates(["match", "date_day", "played_key"], keep="first")
+    return combined.drop(columns=["played_key", "date_day"])
 
 
 def ocr_cell_number(img: Image.Image, box: tuple[int, int, int, int]) -> int | None:
@@ -832,6 +1081,8 @@ def parse_table_image(photo_path: Path, mode: str) -> pd.DataFrame:
 
 
 def latest_context(contexts: pd.DataFrame, date: pd.Timestamp) -> dict:
+    if contexts.empty or "date" not in contexts.columns:
+        return {"match": None, "competition": "Не определено"}
     prev = contexts[contexts["date"] <= date]
     if prev.empty:
         return {"match": None, "competition": "Не определено"}
@@ -839,7 +1090,13 @@ def latest_context(contexts: pd.DataFrame, date: pd.Timestamp) -> dict:
     return {"match": row.get("match"), "competition": row.get("competition", "Не определено")}
 
 
-def build_public_image_dataset(public: pd.DataFrame, contexts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_public_image_dataset(
+    public: pd.DataFrame,
+    contexts: pd.DataFrame,
+    *,
+    public_export: Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    public_export = public_export or PUBLIC_EXPORT
     image_groups = []
     current_kind = None
     current_caption = ""
@@ -861,7 +1118,7 @@ def build_public_image_dataset(public: pd.DataFrame, contexts: pd.DataFrame) -> 
                     "kind": current_kind,
                     "caption": current_caption,
                     "photo_rel": row["photo"],
-                    "photo_path": PUBLIC_EXPORT / row["photo"],
+                    "photo_path": public_export / row["photo"],
                     **ctx,
                 }
             )
@@ -881,6 +1138,7 @@ def build_public_image_dataset(public: pd.DataFrame, contexts: pd.DataFrame) -> 
                         "competition": row["competition"],
                         "photo": str(row["photo_path"]),
                         "played_variants": tuple(played),
+                        "result_source": "image_header",
                     }
                 )
             # Header parsing is enough for played-variant stats. Full result
@@ -903,7 +1161,43 @@ def build_public_image_dataset(public: pd.DataFrame, contexts: pd.DataFrame) -> 
         pd.concat(lineup_rows, ignore_index=True) if lineup_rows else pd.DataFrame(),
         pd.concat(result_rows, ignore_index=True) if result_rows else pd.DataFrame(),
         pd.DataFrame(result_header_rows).drop_duplicates(["date", "match", "played_variants"]) if result_header_rows else pd.DataFrame(),
+        meta,
     )
+
+
+@dataclass
+class PublicBlogStatsParser:
+    """Framework layer for public 7-40 blog/channel statistics."""
+
+    export_dir: Path
+
+    def build_contexts(self, messages: pd.DataFrame) -> pd.DataFrame:
+        return build_context(messages, empty_message_frame(), restrict_public_to_team_announcements=True)
+
+    def parse(self, messages: pd.DataFrame, contexts: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        lineup_rows, result_rows, image_result_rows, image_meta = build_public_image_dataset(
+            messages,
+            contexts,
+            public_export=self.export_dir,
+        )
+        text_result_rows = parse_public_text_results(messages, contexts)
+        played_result_rows = dedupe_played_result_rows(image_result_rows, text_result_rows)
+        pick_events = explode_variants(lineup_rows, "variants", "public_pick")
+        hit_events = explode_variants(played_result_rows, "played_variants", "public_hit")
+        lineup_quality_by_match, lineup_quality_by_team = summarize_lineup_quality(lineup_rows)
+        return {
+            "public_blog_contexts": contexts,
+            "public_blog_image_index": image_meta,
+            "public_blog_lineups_raw": lineup_rows,
+            "public_blog_results_raw": result_rows,
+            "public_blog_image_result_headers": image_result_rows,
+            "public_blog_text_results": text_result_rows,
+            "public_blog_played_results": played_result_rows,
+            "public_lineup_events": pick_events,
+            "public_hit_events": hit_events,
+            "lineup_quality_by_match": lineup_quality_by_match,
+            "lineup_quality_by_team": lineup_quality_by_team,
+        }
 
 
 def explode_variants(df: pd.DataFrame, value_col: str, metric: str) -> pd.DataFrame:
@@ -988,6 +1282,47 @@ def summarize_lineup_quality(lineup_rows: pd.DataFrame) -> tuple[pd.DataFrame, p
     return match_summary.sort_values(["match", "competition"]), team_summary.sort_values(["match", "team"])
 
 
+def summarize_unknown_screenshots(lineup_rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if lineup_rows.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    rows = lineup_rows.copy()
+    rows["is_unknown_team"] = rows["team"].astype(str).str.startswith("unknown")
+    rows["is_incomplete_player_line"] = rows["n_variants"].lt(7)
+    problem_rows = rows[rows["is_unknown_team"] | rows["is_incomplete_player_line"]].copy()
+    if problem_rows.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    summary = (
+        rows.groupby(["photo", "match", "competition"], dropna=False)
+        .agg(
+            date=("date", "min"),
+            message_id=("message_id", "min"),
+            player_rows=("team", "size"),
+            unknown_rows=("is_unknown_team", "sum"),
+            incomplete_rows=("is_incomplete_player_line", "sum"),
+            variant_events=("n_variants", "sum"),
+            known_teams=("team", lambda s: ", ".join(sorted(t for t in set(s.astype(str)) if not t.startswith("unknown")))[:500]),
+        )
+        .reset_index()
+    )
+    summary = summary[(summary["unknown_rows"] > 0) | (summary["incomplete_rows"] > 0)].copy()
+    summary["unknown_row_share"] = summary["unknown_rows"] / summary["player_rows"]
+    summary["needs_reparse_reason"] = np.select(
+        [
+            summary["unknown_rows"].gt(0) & summary["incomplete_rows"].gt(0),
+            summary["unknown_rows"].gt(0),
+            summary["incomplete_rows"].gt(0),
+        ],
+        ["unknown_team_and_incomplete_line", "unknown_team", "incomplete_line"],
+        default="ok",
+    )
+    summary["photo_exists"] = summary["photo"].map(lambda value: Path(str(value)).exists())
+    summary = summary.sort_values(["unknown_rows", "incomplete_rows", "photo"], ascending=[False, False, True])
+
+    photo_list = summary[["photo", "needs_reparse_reason"]].copy()
+    return summary, problem_rows, photo_list
+
+
 def parse_team_forecast_messages(private: pd.DataFrame, private_contexts: pd.DataFrame) -> pd.DataFrame:
     rows = []
     sequence_re = re.compile(r"(?<!\d)((?:[1-9]|[1-3]\d|40)(?:\s*[-, ]\s*(?:[1-9]|[1-3]\d|40)){6,9})(?!\d)")
@@ -1026,30 +1361,215 @@ def parse_team_forecast_messages(private: pd.DataFrame, private_contexts: pd.Dat
     return pd.DataFrame(rows)
 
 
+def is_preview_start_text(text: str) -> bool:
+    low = text.lower()
+    return bool(parse_match_from_text(text)) and any(
+        marker in low
+        for marker in [
+            "следующий мдп",
+            "стартовый мдп",
+            "предматчевая статистика",
+            "мдп:",
+        ]
+    )
+
+
+def is_preview_continuation_text(text: str) -> bool:
+    low = text.lower()
+    markers = [
+        "рекомендую выбирать",
+        "прогнозы принимаю",
+        "удачных прогнозов",
+        "кэф",
+        "коэфф",
+        "по исход",
+        "по гол",
+        "по разниц",
+        "по карточ",
+        "по замен",
+        "пенальти",
+        "судить будет",
+        "судья",
+    ]
+    return len(clean_ws(text)) >= 80 and any(marker in low for marker in markers)
+
+
+def extract_regex_text(pattern: str, text: str) -> str | None:
+    match = re.search(pattern, text, flags=re.I | re.S)
+    if not match:
+        return None
+    return clean_ws(match.group(1))
+
+
+def extract_previous_result(text: str) -> str | None:
+    return extract_regex_text(r"Результат предыдущего матча\s*:\s*([^\n]+)", text)
+
+
+def extract_deadline(text: str) -> str | None:
+    patterns = [
+        r"Прогнозы принимаю до\s*([^\n]+)",
+        r"дедлайн\s*[:\-]?\s*([^\n]+)",
+    ]
+    for pattern in patterns:
+        value = extract_regex_text(pattern, text)
+        if value:
+            return value
+    return None
+
+
+def extract_referee(text: str) -> str | None:
+    patterns = [
+        r"судить будет\s+([А-ЯA-ZЁ][А-Яа-яA-Za-zЁё.\- ]{2,40})",
+        r"судья\s+([А-ЯA-ZЁ][А-Яа-яA-Za-zЁё.\- ]{2,40})",
+        r"судьи\s+([А-ЯA-ZЁ][А-Яа-яA-Za-zЁё.\- ]{2,40})",
+    ]
+    for pattern in patterns:
+        value = extract_regex_text(pattern, text)
+        if value:
+            value = re.split(r"[,.();]", value, maxsplit=1)[0].strip()
+            capitalized = [token.strip() for token in value.split() if token[:1].isupper()]
+            return " ".join(capitalized[:3]) if capitalized else value
+    return None
+
+
+def extract_odds_triplets(text: str) -> str:
+    triplets = []
+    for match in re.finditer(r"\b(\d{1,2}[,.]\d{1,2})\s*[-–—]\s*(\d{1,2}[,.]\d{1,2})\s*[-–—]\s*(\d{1,2}[,.]\d{1,2})\b", text):
+        triplets.append("-".join(value.replace(".", ",") for value in match.groups()))
+    return "; ".join(dict.fromkeys(triplets))
+
+
+def extract_score_candidates(text: str) -> str:
+    scores = re.findall(r"\b[0-5]\s*:\s*[0-5]\b", text)
+    normalized = [re.sub(r"\s+", "", score) for score in scores]
+    return "; ".join(dict.fromkeys(normalized))
+
+
+def extract_relevant_sentence(text: str, markers: list[str]) -> str | None:
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", clean_ws(text))
+    hits = [sentence for sentence in sentences if any(marker in sentence.lower() for marker in markers)]
+    if not hits:
+        return None
+    return " ".join(hits[:2])[:500]
+
+
+def finalize_preview_record(current: dict) -> dict:
+    raw_text = "\n\n".join(current["texts"])
+    full_text = clean_ws(raw_text)
+    recommended = parse_recommended_variants(raw_text)
+    match = current["match"]
+    return {
+        "preview_id": f"preview_{current['first_message_id']}",
+        "first_message_id": current["first_message_id"],
+        "last_message_id": current["last_message_id"],
+        "date": current["date"],
+        "author": current["author"],
+        "match": match,
+        "competition": infer_competition(full_text, match),
+        "recommended_variants": tuple(recommended),
+        "recommended_count": len(recommended),
+        "previous_result": extract_previous_result(raw_text),
+        "deadline": extract_deadline(raw_text),
+        "odds_triplets": extract_odds_triplets(full_text),
+        "score_candidates": extract_score_candidates(full_text),
+        "referee": extract_referee(full_text),
+        "cards_notes": extract_relevant_sentence(full_text, ["карточ", "жк", "судья", "судить"]),
+        "substitution_notes": extract_relevant_sentence(full_text, ["замен", "скамейк"]),
+        "penalty_notes": extract_relevant_sentence(full_text, ["пенальти"]),
+        "text_len": len(full_text),
+        "full_text": full_text,
+    }
+
+
 def parse_private_previews(private: pd.DataFrame, private_contexts: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for _, row in private.iterrows():
-        rec = parse_recommended_variants(row["text"])
-        match = parse_match_from_text(row["text"])
-        if rec and match:
-            rows.append(
-                {
-                    "message_id": row["id"],
+    current = None
+    for _, row in private.sort_values(["date", "id"]).iterrows():
+        text = row["text"]
+        if not text.strip():
+            continue
+        match = parse_match_from_text(text)
+        starts_preview = is_preview_start_text(text)
+        if starts_preview:
+            if current and parse_recommended_variants("\n\n".join(current["texts"])):
+                rows.append(finalize_preview_record(current))
+            current = {
+                "first_message_id": row["id"],
+                "last_message_id": row["id"],
+                "date": row["date"],
+                "author": row["from"],
+                "match": match,
+                "texts": [text],
+            }
+            if parse_recommended_variants(text) and "удачных прогнозов" in text.lower():
+                rows.append(finalize_preview_record(current))
+                current = None
+            continue
+
+        if current is None:
+            rec = parse_recommended_variants(text)
+            if rec:
+                ctx = latest_context(private_contexts, row["date"])
+                current = {
+                    "first_message_id": row["id"],
+                    "last_message_id": row["id"],
                     "date": row["date"],
                     "author": row["from"],
-                    "match": match,
-                    "competition": infer_competition(row["text"], match),
-                    "recommended_variants": tuple(rec),
-                    "text_len": len(row["text"]),
+                    "match": ctx["match"],
+                    "texts": [text],
                 }
-            )
-    return pd.DataFrame(rows)
+                rows.append(finalize_preview_record(current))
+                current = None
+            continue
+
+        within_window = row["date"] <= current["date"] + pd.Timedelta(days=3)
+        if within_window and (parse_recommended_variants(text) or is_preview_continuation_text(text)):
+            current["texts"].append(text)
+            current["last_message_id"] = row["id"]
+            if "удачных прогнозов" in text.lower() or "прогнозы принимаю" in text.lower():
+                rows.append(finalize_preview_record(current))
+                current = None
+            continue
+
+        if current and parse_recommended_variants("\n\n".join(current["texts"])):
+            rows.append(finalize_preview_record(current))
+        current = None
+
+    if current and parse_recommended_variants("\n\n".join(current["texts"])):
+        rows.append(finalize_preview_record(current))
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).drop_duplicates("preview_id").sort_values("date").reset_index(drop=True)
+
+
+@dataclass
+class TeamPreviewParser:
+    """Framework layer for team-chat previews and submitted lines."""
+
+    export_dir: Path
+
+    def build_contexts(self, messages: pd.DataFrame) -> pd.DataFrame:
+        return build_private_context(messages)
+
+    def parse(self, messages: pd.DataFrame, contexts: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        picks = parse_team_forecast_messages(messages, contexts)
+        previews = parse_private_previews(messages, contexts)
+        pick_events = explode_variants(picks, "variants", "steelworkers_pick")
+        preview_events = explode_variants(previews, "recommended_variants", "recommended")
+        return {
+            "team_chat_contexts": contexts,
+            "team_chat_picks_raw": picks,
+            "team_chat_pick_events": pick_events,
+            "team_chat_previews": previews,
+            "team_chat_preview_recommended_events": preview_events,
+        }
 
 
 def add_pct(table: pd.DataFrame, group_cols: list[str], count_col: str = "n") -> pd.DataFrame:
     out = table.copy()
     if group_cols:
-        denom = out.groupby(group_cols)[count_col].transform("sum")
+        denom = out.groupby(group_cols, dropna=False)[count_col].transform("sum")
     else:
         denom = out[count_col].sum()
     out["share"] = out[count_col] / denom
@@ -1057,7 +1577,7 @@ def add_pct(table: pd.DataFrame, group_cols: list[str], count_col: str = "n") ->
 
 
 def dist_table(events: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
-    table = events.groupby(group_cols + ["variant_id", "variant_label", "category"]).size().reset_index(name="n")
+    table = events.groupby(group_cols + ["variant_id", "variant_label", "category"], dropna=False).size().reset_index(name="n")
     return add_pct(table, group_cols).sort_values(group_cols + ["n"], ascending=[True] * len(group_cols) + [False])
 
 
@@ -1075,7 +1595,7 @@ def plot_top_variants(table: pd.DataFrame, title: str, path: Path, top_n: int = 
     plt.close()
 
 
-def plot_all_variant_frequency_grid(table: pd.DataFrame, path: Path) -> None:
+def plot_all_variant_frequency_grid(table: pd.DataFrame, path: Path, title: str = "Частота выбора всех 40 вариантов") -> None:
     if table.empty or "variant_id" not in table.columns:
         return
     data = table.set_index("variant_id")
@@ -1091,7 +1611,7 @@ def plot_all_variant_frequency_grid(table: pd.DataFrame, path: Path) -> None:
     max_count = max(1.0, counts.max())
     fig, ax = plt.subplots(figsize=(16, 7), facecolor="white")
     im = ax.imshow(counts, cmap="YlGnBu", vmin=0, vmax=max_count)
-    ax.set_title("Частота выбора всех 40 вариантов", fontsize=16, pad=16)
+    ax.set_title(title, fontsize=16, pad=16)
     ax.set_xticks(range(10), [str(i) for i in range(1, 11)])
     ax.set_yticks(range(4), ["1-10", "11-20", "21-30", "31-40"])
     ax.set_xlabel("Позиция в десятке")
@@ -1115,6 +1635,130 @@ def plot_all_variant_frequency_grid(table: pd.DataFrame, path: Path) -> None:
     plt.tight_layout()
     plt.savefig(path, dpi=180)
     plt.close()
+
+
+def plot_all_variant_frequency_bars(table: pd.DataFrame, path: Path, title: str, color: str = "#3969ac") -> None:
+    if table.empty or "variant_id" not in table.columns:
+        return
+    data = pd.DataFrame({"variant_id": range(1, 41)})
+    source = table.groupby("variant_id", as_index=False)["n"].sum()
+    data = data.merge(source, on="variant_id", how="left").fillna({"n": 0})
+    data["variant_label"] = data["variant_id"].map(VARIANT_LABELS)
+    data["label"] = data["variant_id"].astype(str) + " — " + data["variant_label"].fillna("")
+    fig_h = 11
+    plt.figure(figsize=(13, fig_h), facecolor="white")
+    plt.barh(data["label"][::-1], data["n"][::-1], color=color)
+    plt.title(title)
+    plt.xlabel("Количество упоминаний")
+    max_n = max(1, data["n"].max())
+    for i, value in enumerate(data["n"][::-1]):
+        if value:
+            plt.text(value + max_n * 0.006, i, str(int(value)), va="center", fontsize=7)
+    plt.xlim(0, max_n * 1.08)
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def plot_variant_rank_curve(table: pd.DataFrame, path: Path) -> None:
+    if table.empty or "variant_id" not in table.columns:
+        return
+    data = table.groupby("variant_id", as_index=False)["n"].sum().sort_values("n", ascending=False).reset_index(drop=True)
+    data["rank"] = data.index + 1
+    plt.figure(figsize=(11, 6), facecolor="white")
+    plt.plot(data["rank"], data["n"], marker="o", color="#3969ac", linewidth=2)
+    for _, row in data.head(8).iterrows():
+        plt.text(row["rank"], row["n"], str(int(row["variant_id"])), ha="center", va="bottom", fontsize=8)
+    plt.title("Кривая концентрации выбора вариантов")
+    plt.xlabel("Ранг варианта по частоте")
+    plt.ylabel("Количество выборов")
+    plt.grid(axis="y", alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def plot_category_comparison(
+    public_pick_events: pd.DataFrame,
+    public_hit_events: pd.DataFrame,
+    preview_events: pd.DataFrame,
+    path: Path,
+) -> None:
+    frames = []
+    for label, events in [
+        ("Ставят команды", public_pick_events),
+        ("Сыграло", public_hit_events),
+        ("Рекомендуем в превью", preview_events),
+    ]:
+        if events.empty:
+            continue
+        table = events.groupby("category").size().reset_index(name="n")
+        table["source"] = label
+        table["share"] = table["n"] / table["n"].sum()
+        frames.append(table)
+    if not frames:
+        return
+    data = pd.concat(frames, ignore_index=True)
+    pivot = data.pivot_table(index="category", columns="source", values="share", fill_value=0)
+    pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=True).index]
+    ax = pivot.plot(kind="barh", figsize=(12, max(5, 0.45 * len(pivot))), color=["#3969ac", "#f2b701", "#11a579"])
+    ax.set_title("Распределение по категориям: ставки, сыгравшие, рекомендации")
+    ax.set_xlabel("Доля внутри источника")
+    ax.set_ylabel("")
+    ax.legend(title="")
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def plot_competition_volume(public_pick_events: pd.DataFrame, public_hit_events: pd.DataFrame, path: Path) -> None:
+    frames = []
+    for label, events in [("Ставки", public_pick_events), ("Сыгравшие", public_hit_events)]:
+        if events.empty:
+            continue
+        table = events.groupby("competition").size().reset_index(name="n")
+        table["source"] = label
+        frames.append(table)
+    if not frames:
+        return
+    data = pd.concat(frames, ignore_index=True)
+    pivot = data.pivot_table(index="competition", columns="source", values="n", fill_value=0)
+    pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=True).index]
+    ax = pivot.plot(kind="barh", figsize=(12, max(5, 0.5 * len(pivot))), color=["#3969ac", "#f2b701"])
+    ax.set_title("Объем распарсенных событий по турнирам")
+    ax.set_xlabel("Количество variant-events")
+    ax.set_ylabel("")
+    ax.legend(title="")
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def plot_team_diversity(public_pick_events: pd.DataFrame, path: Path) -> None:
+    if public_pick_events.empty:
+        return
+    counts = public_pick_events.groupby(["team", "variant_id"]).size().reset_index(name="n")
+    counts["total"] = counts.groupby("team")["n"].transform("sum")
+    counts["p"] = counts["n"] / counts["total"]
+    entropy = counts.groupby("team")["p"].apply(lambda s: float(-(s * np.log(s)).sum())).rename("entropy")
+    totals = counts.groupby("team")["total"].max()
+    data = pd.concat([entropy, totals], axis=1)
+    data["effective_variants"] = np.exp(data["entropy"])
+    data = data.sort_values("effective_variants", ascending=True)
+    plt.figure(figsize=(11, max(6, 0.36 * len(data))), facecolor="white")
+    plt.barh(data.index, data["effective_variants"], color="#80ba5a")
+    plt.xlabel("Эффективное число вариантов")
+    plt.title("Разнообразие линий по командам")
+    for i, value in enumerate(data["effective_variants"]):
+        plt.text(value + 0.08, i, f"{value:.1f}", va="center", fontsize=7)
+    plt.xlim(0, max(8, data["effective_variants"].max() + 1.2))
+    plt.tight_layout()
+    plt.savefig(path, dpi=180)
+    plt.close()
+
+
+def plot_preview_recommendation_grid(preview_overall: pd.DataFrame, path: Path) -> None:
+    plot_all_variant_frequency_grid(preview_overall, path, title="Частота рекомендаций в командных превью")
 
 
 def plot_heatmap(table: pd.DataFrame, index_col: str, title: str, path: Path, top_variants: list[int]) -> None:
@@ -1268,7 +1912,7 @@ def plot_lineup_quality(lineup_quality_by_match: pd.DataFrame, path: Path) -> No
     plt.close()
 
 
-def make_visualization_index(visualizations: list[dict], path: Path) -> None:
+def make_visualization_index(visualizations: list[dict], path: Path, scope_label: str) -> None:
     items = []
     for item in visualizations:
         rel = html.escape(item["file"])
@@ -1300,7 +1944,7 @@ def make_visualization_index(visualizations: list[dict], path: Path) -> None:
   </style>
 </head>
 <body>
-  <h1>7-40: визуализации 14-дневного среза</h1>
+  <h1>7-40: визуализации {html.escape(scope_label)}</h1>
   {''.join(items)}
 </body>
 </html>
@@ -1311,42 +1955,79 @@ def make_visualization_index(visualizations: list[dict], path: Path) -> None:
 def build_visualizations(
     public_pick_events: pd.DataFrame,
     public_hit_events: pd.DataFrame,
+    team_pick_events: pd.DataFrame,
+    preview_events: pd.DataFrame,
     picks_overall: pd.DataFrame,
     hits_overall: pd.DataFrame,
+    preview_overall: pd.DataFrame,
     picks_by_comp: pd.DataFrame,
     picks_by_team: pd.DataFrame,
     hits_by_comp: pd.DataFrame,
     lineup_quality_by_match: pd.DataFrame,
+    scope_label: str,
 ) -> pd.DataFrame:
     vis_dir = OUT / "visualizations"
     vis_dir.mkdir(parents=True, exist_ok=True)
+    known_team_pick_events = public_pick_events[
+        ~public_pick_events.get("team", pd.Series(dtype=str)).astype(str).str.startswith("unknown")
+    ].copy() if not public_pick_events.empty else public_pick_events
     manifest = [
         {
             "file": "00_all_40_variant_frequency.png",
             "title": "Частота выбора всех 40 вариантов",
-            "note": "Полная карта линии 7-40: номер варианта, количество выборов и доля в 14-дневном срезе.",
-            "builder": lambda p: plot_all_variant_frequency_grid(picks_overall, p),
+            "note": "Полная карта линии 7-40: номер варианта, количество выборов и доля в выбранном срезе.",
+            "builder": lambda p: plot_all_variant_frequency_grid(picks_overall, p, "Частота выбора всех 40 вариантов"),
         },
         {
-            "file": "01_picks_top.png",
+            "file": "01_all_40_variant_bars.png",
+            "title": "Распределение выбора по всем 40 вариантам",
+            "note": "Горизонтальный барчарт без отсечения top-N: удобен для поиска редких и неиспользуемых вариантов.",
+            "builder": lambda p: plot_all_variant_frequency_bars(picks_overall, p, "Распределение выбора по всем 40 вариантам"),
+        },
+        {
+            "file": "02_picks_top.png",
             "title": "Топ вариантов, которые ставят команды",
             "note": "Базовый sanity-check распределения: здесь должны всплывать частые 6, 11, 29.",
             "builder": lambda p: plot_top_variants(picks_overall, "Топ вариантов, которые ставят команды", p, top_n=20),
         },
         {
-            "file": "02_hits_top.png",
+            "file": "03_hits_top.png",
             "title": "Топ вариантов, которые сыграли",
-            "note": "Сыгравшие варианты берутся из верхней 4x10 шапки итоговых скриншотов.",
+            "note": "Сыгравшие варианты берутся из 4x10 шапки итоговых скриншотов и текстовых блоков результатов.",
             "builder": lambda p: plot_top_variants(hits_overall, "Топ вариантов, которые сыграли", p, top_n=20),
         },
         {
-            "file": "03_pick_vs_hit_share.png",
+            "file": "04_hits_all_40_variant_bars.png",
+            "title": "Распределение сыгравших по всем 40 вариантам",
+            "note": "Полная частота сыгравших вариантов без top-N отсечения; полезно для контроля редких событий.",
+            "builder": lambda p: plot_all_variant_frequency_bars(hits_overall, p, "Распределение сыгравших по всем 40 вариантам", color="#f2b701"),
+        },
+        {
+            "file": "05_preview_recommendation_frequency.png",
+            "title": "Частота рекомендаций в превью команды",
+            "note": "Какие варианты чаще всего попадают в тренерский пул рекомендаций командного чата.",
+            "builder": lambda p: plot_preview_recommendation_grid(preview_overall, p),
+        },
+        {
+            "file": "06_pick_vs_hit_share.png",
             "title": "Ставят vs сыграло",
-            "note": "Сравнение долей для топ вариантов по ставкам; на 14 днях выборка сыгравших мала, поэтому это диагностический, а не причинный график.",
+            "note": "Сравнение долей для топ вариантов по ставкам; это диагностический, а не причинный график.",
             "builder": lambda p: plot_pick_hit_comparison(picks_overall, hits_overall, p, top_n=15),
         },
         {
-            "file": "04_competition_variant_share_heatmap.png",
+            "file": "07_category_pick_hit_recommendation_mix.png",
+            "title": "Категории: ставки, сыгравшие, рекомендации",
+            "note": "Сравнение структуры выбора по типам вариантов: исходы, таймы, тоталы, дисциплина, замены и т.д.",
+            "builder": lambda p: plot_category_comparison(public_pick_events, public_hit_events, preview_events, p),
+        },
+        {
+            "file": "08_competition_event_volume.png",
+            "title": "Объем событий по турнирам",
+            "note": "Показывает, какие турниры сильнее всего представлены в распарсенной истории.",
+            "builder": lambda p: plot_competition_volume(public_pick_events, public_hit_events, p),
+        },
+        {
+            "file": "09_competition_variant_share_heatmap.png",
             "title": "Профиль вариантов по турнирам",
             "note": "Нормализованная heatmap: доли вариантов внутри каждого турнира, а не абсолютные counts.",
             "builder": lambda p: plot_share_heatmap(
@@ -1358,7 +2039,7 @@ def build_visualizations(
             ),
         },
         {
-            "file": "05_team_variant_share_heatmap.png",
+            "file": "10_team_variant_share_heatmap.png",
             "title": "Профиль вариантов по командам",
             "note": "Нормализованная heatmap показывает, какие команды чаще отклоняются от общего шаблона.",
             "builder": lambda p: plot_share_heatmap(
@@ -1370,19 +2051,31 @@ def build_visualizations(
             ),
         },
         {
-            "file": "06_category_mix_by_competition.png",
+            "file": "11_category_mix_by_competition.png",
             "title": "Структура ставок по категориям",
             "note": "Показывает, где команды чаще выбирают исходы, таймы, тоталы, дисциплину, замены и т.д.",
             "builder": lambda p: plot_category_distribution(public_pick_events, p),
         },
         {
-            "file": "07_team_top3_concentration.png",
+            "file": "12_team_top3_concentration.png",
             "title": "Доля трех самых частых вариантов по командам",
             "note": "Показывает, насколько каждая команда опирается на три своих самых частых варианта.",
-            "builder": lambda p: plot_team_concentration(public_pick_events, p),
+            "builder": lambda p: plot_team_concentration(known_team_pick_events, p),
         },
         {
-            "file": "08_lineup_quality_by_match.png",
+            "file": "13_team_diversity_effective_variants.png",
+            "title": "Разнообразие линий по командам",
+            "note": "Эффективное число вариантов: выше означает менее шаблонную и более распределенную линию.",
+            "builder": lambda p: plot_team_diversity(known_team_pick_events, p),
+        },
+        {
+            "file": "14_variant_rank_curve.png",
+            "title": "Кривая концентрации выбора вариантов",
+            "note": "Показывает, насколько быстро частоты убывают от самых популярных вариантов к длинному хвосту.",
+            "builder": lambda p: plot_variant_rank_curve(picks_overall, p),
+        },
+        {
+            "file": "15_lineup_quality_by_match.png",
             "title": "Качество разметки по МДП",
             "note": "Контрольная визуализация полноты: 80 строк игроков соответствует полному туру 16x5.",
             "builder": lambda p: plot_lineup_quality(lineup_quality_by_match, p),
@@ -1395,7 +2088,7 @@ def build_visualizations(
         if path.exists():
             rows.append({k: item[k] for k in ["file", "title", "note"]})
     if rows:
-        make_visualization_index(rows, vis_dir / "index.html")
+        make_visualization_index(rows, vis_dir / "index.html", scope_label)
     return pd.DataFrame(rows)
 
 
@@ -1429,19 +2122,19 @@ def make_markdown_report(
         return "\n".join(lines)
 
     report = [
-        "# 7-40: первичная статистика по Telegram-экспортам",
+        "# 7-40: статистика публичного блога и превью команды",
         "",
         "## Что вошло в анализ",
         "",
-        f"- Публичный канал: `{PUBLIC_EXPORT / 'result.json'}`",
-        f"- Командный чат: `{PRIVATE_EXPORT / 'result.json'}`",
+        f"- Публичный блог/канал: `{PUBLIC_EXPORT / 'result.json'}`",
+        f"- Командный чат с превью: `{PRIVATE_EXPORT / 'result.json'}`",
         f"- Фото-архив: `{PROJECT_ROOT / 'data/raw/chat_export_2026-04-26_photos.zip'}`",
         "",
         "## Качество парсинга",
         "",
         pd.DataFrame([quality]).to_markdown(index=False),
         "",
-        "Интерпретация: OCR используется только для табличных скриншотов ставок/итогов. Сырьё, промежуточные таблицы и картинки лежат в `output/7_40_analysis` и не коммитятся.",
+        "Интерпретация: публичный слой отвечает за OCR составов и сыгравшие варианты, командный слой - за превью, рекомендации и линии игроков. Сырьё, промежуточные таблицы и картинки лежат в `output/7_40_analysis` и не коммитятся.",
         "",
         "## Что обычно ставят все команды",
         "",
@@ -1473,11 +2166,69 @@ def make_markdown_report(
         "",
         "- `public_lineup_events.csv` — варианты, которые команды ставили в публичных таблицах.",
         "- `public_hit_events.csv` — сыгравшие варианты по жёлтой подсветке в итоговых таблицах.",
+        "- `public_blog_*` — промежуточные таблицы публичного парсера статистики.",
+        "- `team_chat_*` — промежуточные таблицы парсера командного чата и превью.",
         "- `steelworkers_pick_events.csv` — ставки из командного чата.",
         "- `private_previews.csv` — превью команды, матчи, турниры и рекомендуемые варианты.",
         "- `summary.xlsx` — компактная книга с основными распределениями.",
     ]
     (OUT / "report.md").write_text("\n".join(report), encoding="utf-8")
+
+
+def write_team_preview_corpus(previews: pd.DataFrame, path: Path, max_previews: int = 30) -> None:
+    if previews.empty:
+        path.write_text("# Корпус командных превью\n\n_Нет распарсенных превью._\n", encoding="utf-8")
+        return
+    rows = ["# Корпус командных превью", ""]
+    data = previews.sort_values("date", ascending=False).head(max_previews)
+    for _, row in data.iterrows():
+        recommended = "-".join(str(value) for value in row.get("recommended_variants", ()))
+        rows.extend(
+            [
+                f"## {row.get('match', 'МДП не определен')}",
+                "",
+                f"- Дата: {row.get('date', '')}",
+                f"- Турнир: {row.get('competition', 'Не определено')}",
+                f"- Рекомендации: {recommended}",
+                f"- Коэффициенты: {row.get('odds_triplets', '') or 'не извлечено'}",
+                f"- Счета: {row.get('score_candidates', '') or 'не извлечено'}",
+                f"- Судья: {row.get('referee', '') or 'не извлечено'}",
+                f"- Карточки: {row.get('cards_notes', '') or 'не извлечено'}",
+                f"- Замены: {row.get('substitution_notes', '') or 'не извлечено'}",
+                f"- Пенальти: {row.get('penalty_notes', '') or 'не извлечено'}",
+                "",
+                "### Полный текст",
+                "",
+                str(row.get("full_text", ""))[:6000],
+                "",
+            ]
+        )
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+
+def backup_output_dir(out_dir: Path, backup_dir: Path) -> dict:
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = backup_dir / f"{out_dir.name}_parse_results_{stamp}.zip"
+    include_suffixes = {".csv", ".xlsx", ".md", ".html", ".png", ".txt"}
+    files = sorted(path for path in out_dir.rglob("*") if path.is_file() and path.suffix.lower() in include_suffixes)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for path in files:
+            archive.write(path, path.relative_to(out_dir.parent))
+    sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    manifest = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "source_dir": str(out_dir),
+        "backup_zip": str(zip_path),
+        "backup_sha256": sha256,
+        "file_count": len(files),
+        "unknown_screenshot_files": str(out_dir / "unknown_screenshot_files.csv"),
+        "unknown_screenshot_photo_list": str(out_dir / "unknown_screenshot_photo_list.txt"),
+    }
+    manifest_path = backup_dir / f"{out_dir.name}_parse_results_{stamp}.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    (backup_dir / f"latest_{out_dir.name}_backup.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
 
 
 def main() -> None:
@@ -1487,6 +2238,8 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT, help="Output directory.")
     parser.add_argument("--public-export", type=Path, default=PUBLIC_EXPORT, help="Telegram export directory for the public 7-40 channel.")
     parser.add_argument("--private-export", type=Path, default=PRIVATE_EXPORT, help="Telegram export directory for the team/private chat.")
+    parser.add_argument("--backup-results", action="store_true", help="Zip generated reports/CSVs/HTML after a successful run.")
+    parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR, help="Directory for local parser-result backups.")
     args = parser.parse_args()
 
     PUBLIC_EXPORT = args.public_export.expanduser()
@@ -1496,10 +2249,14 @@ def main() -> None:
         OUT = OUT / f"last_{args.days}_days"
     OUT.mkdir(parents=True, exist_ok=True)
 
+    scope_label = f"{args.days}-дневного среза" if args.days else "полного датасета"
+    log_step(f"Загружаю Telegram-экспорты: public={PUBLIC_EXPORT}, team_chat={PRIVATE_EXPORT}")
     public = load_messages(PUBLIC_EXPORT)
     private = load_messages(PRIVATE_EXPORT)
-    contexts = build_context(public, private, restrict_public_to_team_announcements=True)
-    private_contexts = build_context(private, private, restrict_public_to_team_announcements=False)
+    public_parser = PublicBlogStatsParser(PUBLIC_EXPORT)
+    team_parser = TeamPreviewParser(PRIVATE_EXPORT)
+    contexts = public_parser.build_contexts(public)
+    private_contexts = team_parser.build_contexts(private)
 
     date_from = None
     if args.days:
@@ -1511,58 +2268,112 @@ def main() -> None:
         public_scope = public
         private_scope = private
 
-    lineup_rows, result_rows, result_header_rows = build_public_image_dataset(public_scope, contexts)
+    log_step(f"Парсю публичный блог/канал и OCR-таблицы для {scope_label}")
+    public_artifacts = public_parser.parse(public_scope, contexts)
+    lineup_rows = public_artifacts["public_blog_lineups_raw"]
+    result_rows = public_artifacts["public_blog_results_raw"]
+    image_result_rows = public_artifacts["public_blog_image_result_headers"]
+    text_result_rows = public_artifacts["public_blog_text_results"]
+    played_result_rows = public_artifacts["public_blog_played_results"]
+    public_pick_events = public_artifacts["public_lineup_events"]
+    public_hit_events = public_artifacts["public_hit_events"]
+    lineup_quality_by_match = public_artifacts["lineup_quality_by_match"]
+    lineup_quality_by_team = public_artifacts["lineup_quality_by_team"]
+    unknown_screenshot_files, unknown_screenshot_rows, unknown_screenshot_photo_list = summarize_unknown_screenshots(lineup_rows)
 
-    public_pick_events = explode_variants(lineup_rows, "variants", "public_pick")
-    public_hit_events = explode_variants(result_header_rows, "played_variants", "public_hit")
-    lineup_quality_by_match, lineup_quality_by_team = summarize_lineup_quality(lineup_rows)
-    team_picks = parse_team_forecast_messages(private_scope, private_contexts)
-    team_pick_events = explode_variants(team_picks, "variants", "steelworkers_pick")
-    previews = parse_private_previews(private_scope, private_contexts)
-    preview_events = explode_variants(previews, "recommended_variants", "recommended")
+    log_step(f"Парсю командный чат: превью, рекомендации и линии игроков для {scope_label}")
+    team_artifacts = team_parser.parse(private_scope, private_contexts)
+    team_picks = team_artifacts["team_chat_picks_raw"]
+    team_pick_events = team_artifacts["team_chat_pick_events"]
+    previews = team_artifacts["team_chat_previews"]
+    preview_events = team_artifacts["team_chat_preview_recommended_events"]
 
     for name, df in [
         ("contexts.csv", contexts),
+        ("private_contexts.csv", private_contexts),
+        ("public_blog_contexts.csv", public_artifacts["public_blog_contexts"]),
+        ("public_blog_image_index.csv", public_artifacts["public_blog_image_index"]),
         ("public_lineups_raw.csv", lineup_rows),
         ("public_results_raw.csv", result_rows),
-        ("public_result_headers.csv", result_header_rows),
+        ("public_result_headers.csv", image_result_rows),
+        ("public_text_results.csv", text_result_rows),
+        ("public_played_results.csv", played_result_rows),
         ("lineup_quality_by_match.csv", lineup_quality_by_match),
         ("lineup_quality_by_team.csv", lineup_quality_by_team),
+        ("unknown_screenshot_files.csv", unknown_screenshot_files),
+        ("unknown_screenshot_rows.csv", unknown_screenshot_rows),
+        ("unknown_screenshot_photo_list.csv", unknown_screenshot_photo_list),
         ("public_lineup_events.csv", public_pick_events),
+        ("public_lineup_events_known_team.csv", public_pick_events[
+            ~public_pick_events["team"].astype(str).str.startswith("unknown")
+        ] if not public_pick_events.empty and "team" in public_pick_events.columns else public_pick_events),
         ("public_hit_events.csv", public_hit_events),
         ("steelworkers_picks_raw.csv", team_picks),
         ("steelworkers_pick_events.csv", team_pick_events),
         ("private_previews.csv", previews),
         ("private_preview_recommended_events.csv", preview_events),
+        ("team_chat_contexts.csv", team_artifacts["team_chat_contexts"]),
+        ("team_chat_previews.csv", team_artifacts["team_chat_previews"]),
+        ("team_chat_preview_recommended_events.csv", team_artifacts["team_chat_preview_recommended_events"]),
     ]:
         df.to_csv(OUT / name, index=False)
+    if not unknown_screenshot_photo_list.empty:
+        (OUT / "unknown_screenshot_photo_list.txt").write_text(
+            "\n".join(unknown_screenshot_photo_list["photo"].astype(str).tolist()) + "\n",
+            encoding="utf-8",
+        )
 
     picks_overall = dist_table(public_pick_events, []) if not public_pick_events.empty else pd.DataFrame()
     hits_overall = dist_table(public_hit_events, []) if not public_hit_events.empty else pd.DataFrame()
     steel_overall = dist_table(team_pick_events, []) if not team_pick_events.empty else pd.DataFrame()
+    preview_overall = dist_table(preview_events, []) if not preview_events.empty else pd.DataFrame()
     picks_by_comp = dist_table(public_pick_events, ["competition"]) if not public_pick_events.empty else pd.DataFrame()
-    picks_by_team = dist_table(public_pick_events, ["team"]) if not public_pick_events.empty else pd.DataFrame()
+    known_team_pick_events = public_pick_events[
+        ~public_pick_events["team"].astype(str).str.startswith("unknown")
+    ].copy() if not public_pick_events.empty and "team" in public_pick_events.columns else public_pick_events
+    picks_by_team = dist_table(known_team_pick_events, ["team"]) if not known_team_pick_events.empty else pd.DataFrame()
     hits_by_comp = dist_table(public_hit_events, ["competition"]) if not public_hit_events.empty else pd.DataFrame()
     steel_by_comp = dist_table(team_pick_events, ["competition"]) if not team_pick_events.empty else pd.DataFrame()
+    preview_by_comp = dist_table(preview_events, ["competition"]) if not preview_events.empty else pd.DataFrame()
+    picks_by_category = add_pct(public_pick_events.groupby(["category"]).size().reset_index(name="n"), []) if not public_pick_events.empty else pd.DataFrame()
+    hits_by_category = add_pct(public_hit_events.groupby(["category"]).size().reset_index(name="n"), []) if not public_hit_events.empty else pd.DataFrame()
+    steel_by_category = add_pct(team_pick_events.groupby(["category"]).size().reset_index(name="n"), []) if not team_pick_events.empty else pd.DataFrame()
+    preview_by_category = add_pct(preview_events.groupby(["category"]).size().reset_index(name="n"), []) if not preview_events.empty else pd.DataFrame()
+    picks_by_match = dist_table(public_pick_events, ["match", "competition"]) if not public_pick_events.empty else pd.DataFrame()
+    hits_by_match = dist_table(public_hit_events, ["match", "competition"]) if not public_hit_events.empty else pd.DataFrame()
+
+    log_step("Строю распределения и визуализации")
     visualization_manifest = build_visualizations(
         public_pick_events,
         public_hit_events,
+        team_pick_events,
+        preview_events,
         picks_overall,
         hits_overall,
+        preview_overall,
         picks_by_comp,
         picks_by_team,
         hits_by_comp,
         lineup_quality_by_match,
+        scope_label,
     )
 
     for name, df in [
         ("picks_overall.csv", picks_overall),
         ("hits_overall.csv", hits_overall),
         ("steelworkers_picks_overall.csv", steel_overall),
+        ("preview_recommendations_overall.csv", preview_overall),
         ("picks_by_competition.csv", picks_by_comp),
         ("picks_by_team.csv", picks_by_team),
         ("hits_by_competition.csv", hits_by_comp),
         ("steelworkers_picks_by_competition.csv", steel_by_comp),
+        ("preview_recommendations_by_competition.csv", preview_by_comp),
+        ("picks_by_category.csv", picks_by_category),
+        ("hits_by_category.csv", hits_by_category),
+        ("steelworkers_picks_by_category.csv", steel_by_category),
+        ("preview_recommendations_by_category.csv", preview_by_category),
+        ("picks_by_match.csv", picks_by_match),
+        ("hits_by_match.csv", hits_by_match),
         ("visualization_manifest.csv", visualization_manifest),
     ]:
         df.to_csv(OUT / name, index=False)
@@ -1571,12 +2382,18 @@ def main() -> None:
         picks_overall.to_excel(writer, sheet_name="picks_overall", index=False)
         hits_overall.to_excel(writer, sheet_name="hits_overall", index=False)
         steel_overall.to_excel(writer, sheet_name="steel_picks_overall", index=False)
+        preview_overall.to_excel(writer, sheet_name="preview_recs_overall", index=False)
         picks_by_comp.to_excel(writer, sheet_name="picks_by_comp", index=False)
         hits_by_comp.to_excel(writer, sheet_name="hits_by_comp", index=False)
         picks_by_team.to_excel(writer, sheet_name="picks_by_team", index=False)
         steel_by_comp.to_excel(writer, sheet_name="steel_by_comp", index=False)
+        preview_by_comp.to_excel(writer, sheet_name="preview_recs_by_comp", index=False)
+        picks_by_category.to_excel(writer, sheet_name="picks_by_category", index=False)
+        hits_by_category.to_excel(writer, sheet_name="hits_by_category", index=False)
+        preview_by_category.to_excel(writer, sheet_name="preview_by_category", index=False)
         lineup_quality_by_match.to_excel(writer, sheet_name="lineup_quality_match", index=False)
         lineup_quality_by_team.to_excel(writer, sheet_name="lineup_quality_team", index=False)
+        unknown_screenshot_files.to_excel(writer, sheet_name="unknown_screenshots", index=False)
         visualization_manifest.to_excel(writer, sheet_name="visualizations", index=False)
         previews.to_excel(writer, sheet_name="private_previews", index=False)
 
@@ -1598,17 +2415,24 @@ def main() -> None:
         "private_messages_in_scope": len(private_scope),
         "parsed_lineup_rows": len(lineup_rows),
         "parsed_result_rows": len(result_rows),
-        "parsed_result_headers": len(result_header_rows),
+        "parsed_image_result_headers": len(image_result_rows),
+        "parsed_text_result_rows": len(text_result_rows),
+        "parsed_played_result_rows": len(played_result_rows),
         "public_pick_events": len(public_pick_events),
         "public_hit_events": len(public_hit_events),
         "lineup_unknown_rows": int(lineup_rows["team"].astype(str).str.startswith("unknown").sum()) if not lineup_rows.empty else 0,
         "lineup_unknown_row_share": float(lineup_rows["team"].astype(str).str.startswith("unknown").mean()) if not lineup_rows.empty else 0,
         "lineup_incomplete_player_rows": int(lineup_rows["n_variants"].lt(7).sum()) if not lineup_rows.empty else 0,
+        "unknown_screenshot_files": len(unknown_screenshot_files),
         "steelworkers_pick_rows": len(team_picks),
         "steelworkers_pick_events": len(team_pick_events),
         "private_previews": len(previews),
+        "private_preview_recommended_events": len(preview_events),
     }
+    write_team_preview_corpus(previews, OUT / "team_preview_corpus.md")
     make_markdown_report(public_pick_events, public_hit_events, team_pick_events, previews, quality, visualization_manifest)
+    if args.backup_results:
+        quality["backup"] = backup_output_dir(OUT, args.backup_dir.expanduser())
     print(json.dumps(quality, ensure_ascii=False, indent=2))
 
 
