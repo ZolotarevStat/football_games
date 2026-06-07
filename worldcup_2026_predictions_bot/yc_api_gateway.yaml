@@ -1,0 +1,24 @@
+openapi: 3.0.0
+info:
+  title: wc-predictions-bot
+  version: 1.0.0
+paths:
+  /telegram:
+    get:
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: <function-id>
+        service_account_id: <service-account-id>
+      operationId: telegramGet
+      responses:
+        "200":
+          description: OK
+    post:
+      x-yc-apigateway-integration:
+        type: cloud_functions
+        function_id: <function-id>
+        service_account_id: <service-account-id>
+      operationId: telegramPost
+      responses:
+        "200":
+          description: OK
