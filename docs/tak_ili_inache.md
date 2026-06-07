@@ -22,18 +22,18 @@
 
 ## Локальный фреймворк
 
-Ноутбук: `/Users/aozolotarev/Documents/personal/notebooks/football/tak_ili_inache_framework.ipynb`
+Ноутбук: `notebooks/tak_ili_inache_framework.ipynb`
 
 Ожидаемые входы:
 
-- `data/football/fixtures_odds.csv`
-- `data/football/team_power_rankings.csv`
-- `data/football/player_bets.txt`
+- `data/raw/fixtures_odds.csv`
+- `data/raw/team_power_rankings.csv`
+- `data/raw/player_bets.txt`
 
 Основные выходы:
 
-- `output/football/tak_ili_inache_match_line.xlsx`
-- `output/football/tak_ili_inache_player_bets.xlsx`
+- `output/tak_ili_inache_match_line.xlsx`
+- `output/tak_ili_inache_player_bets.xlsx`
 
 ## Следующие данные от пользователя
 

@@ -45,7 +45,7 @@ Do not deploy `.env` or `service-account.json` files. Put secrets into hosting e
 Typical VM layout:
 
 ```text
-/opt/wc-predictions-bot
+<app-dir>
   .env
   .venv/
   src/
@@ -55,7 +55,7 @@ Typical VM layout:
 Typical smoke sequence:
 
 ```bash
-cd /opt/wc-predictions-bot
+cd <app-dir>
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
 sudo systemctl restart wc-predictions-bot
 systemctl is-active wc-predictions-bot
