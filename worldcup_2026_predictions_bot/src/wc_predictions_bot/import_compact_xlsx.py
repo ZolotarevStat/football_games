@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -14,6 +14,7 @@ from .sheet_schema import SHEET_HEADERS
 
 
 TZ = ZoneInfo("Europe/Moscow")
+DEADLINE_BEFORE_KICKOFF = timedelta(minutes=5)
 TEAM_CODES = {
     "Австралия": "Aus",
     "Австрия": "Aut",
@@ -73,6 +74,7 @@ def main() -> None:
     parser.add_argument("--spreadsheet-id", default="")
     parser.add_argument("--service-account-json-b64", default="")
     parser.add_argument("--service-account-file", default="")
+    parser.add_argument("--only", choices=("all", "matches", "players"), default="all")
     args = parser.parse_args()
 
     load_dotenv(args.env_file)
@@ -86,9 +88,11 @@ def main() -> None:
     matches, players = parse_workbook(Path(args.workbook))
     service = build_service(service_account_json_b64, service_account_file)
     values = service.spreadsheets().values()
-    replace_sheet(values, spreadsheet_id, "matches", matches)
-    replace_sheet(values, spreadsheet_id, "players", players)
-    print(f"Imported matches={len(matches)} players={len(players)} into spreadsheet.")
+    if args.only in {"all", "matches"}:
+        replace_sheet(values, spreadsheet_id, "matches", matches)
+    if args.only in {"all", "players"}:
+        replace_sheet(values, spreadsheet_id, "players", players)
+    print(f"Imported matches={len(matches) if args.only in {'all', 'matches'} else 0} players={len(players) if args.only in {'all', 'players'} else 0} into spreadsheet.")
 
 
 def parse_workbook(path: Path) -> tuple[list[list[str]], list[list[str]]]:
@@ -106,17 +110,18 @@ def parse_workbook(path: Path) -> tuple[list[list[str]], list[list[str]]]:
 def parse_matches(sheet: Any) -> list[list[str]]:
     rows: list[list[str]] = []
     for index, row in enumerate(sheet.iter_rows(min_row=5, values_only=True), start=1):
-        group, tour, _, kickoff, deadline, match_name = row[:6]
+        group, tour, _, kickoff, _, match_name = row[:6]
         if not match_name:
             continue
         team1, team2 = parse_match_name(str(match_name))
+        kickoff_msk = ensure_msk(kickoff)
         rows.append(
             [
                 match_id(team1, team2),
                 str(group or "").strip(),
                 str(tour or "").strip(),
-                iso_msk(kickoff),
-                iso_msk(deadline),
+                iso_msk(kickoff_msk),
+                iso_msk(kickoff_msk - DEADLINE_BEFORE_KICKOFF),
                 team1,
                 team2,
                 "open",
@@ -204,11 +209,15 @@ def normalize_team(value: str) -> str:
 
 
 def iso_msk(value: Any) -> str:
+    return ensure_msk(value).isoformat(timespec="seconds")
+
+
+def ensure_msk(value: Any) -> datetime:
     if not isinstance(value, datetime):
         raise ValueError(f"Expected datetime, got {value!r}")
     if value.tzinfo is None:
         value = value.replace(tzinfo=TZ)
-    return value.isoformat(timespec="seconds")
+    return value
 
 
 def numeric(value: Any) -> float:
