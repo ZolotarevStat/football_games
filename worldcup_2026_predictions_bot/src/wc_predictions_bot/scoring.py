@@ -9,6 +9,7 @@ from .models import LatestPrediction, MatchResult, Participant
 SCORE_POINTS_BY_RANK = (12, 10, 8, 7, 6, 5, 4)
 GOAL_POINTS = 4
 ASSIST_POINTS = 2
+COUNTED_RESULT_STATUSES = {"", "final", "played", "finished"}
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ def calculate_scoring(
     result_by_match = {
         result.match_id: result
         for result in results
-        if result.actual_score and (not match_id or result.match_id == match_id)
+        if is_counted_result(result) and (not match_id or result.match_id == match_id)
     }
     participant_by_id = {participant.participant_id: participant for participant in participants}
     scoring_rows: list[dict[str, str]] = []
@@ -79,6 +80,10 @@ def score_prediction(prediction: LatestPrediction, result: MatchResult) -> tuple
             points = SCORE_POINTS_BY_RANK[index]
             return points, f"точный счет #{index + 1}: +{points}"
     return 0, "точного счета нет"
+
+
+def is_counted_result(result: MatchResult) -> bool:
+    return bool(result.actual_score and result.status.strip().lower() in COUNTED_RESULT_STATUSES)
 
 
 def author_prediction(prediction: LatestPrediction, result: MatchResult) -> tuple[int, str]:

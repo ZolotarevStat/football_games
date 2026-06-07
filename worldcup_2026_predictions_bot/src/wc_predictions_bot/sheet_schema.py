@@ -72,6 +72,7 @@ SHEET_HEADERS = {
     "results": [
         "match_id",
         "actual_score",
+        "status",
         "goals",
         "assists",
         "own_goals",

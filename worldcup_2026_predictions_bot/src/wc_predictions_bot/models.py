@@ -57,6 +57,7 @@ class LatestPrediction:
 class MatchResult:
     match_id: str
     actual_score: str
+    status: str = "final"
     goals: tuple[str, ...] = ()
     assists: tuple[str, ...] = ()
     own_goals: tuple[str, ...] = ()

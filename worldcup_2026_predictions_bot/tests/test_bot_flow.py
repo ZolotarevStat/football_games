@@ -11,8 +11,15 @@ from wc_predictions_bot.models import LatestPrediction, Match, MatchResult, Play
 from wc_predictions_bot.telegram_api import RecordingTelegramApi
 
 
-def make_config(open_registration_enabled: bool = False) -> Config:
-    return replace(Config.from_env(), open_registration_enabled=open_registration_enabled)
+def make_config(
+    open_registration_enabled: bool = False,
+    allowed_usernames: frozenset[str] = frozenset(),
+) -> Config:
+    return replace(
+        Config.from_env(),
+        open_registration_enabled=open_registration_enabled,
+        allowed_usernames=allowed_usernames,
+    )
 
 
 def message_update(text: str, telegram_id: int = 100, username: str = "user", chat_type: str = "private") -> dict:
@@ -89,6 +96,34 @@ class BotFlowTest(unittest.TestCase):
 
         self.assertIsNotNone(repo.get_participant_by_telegram_id("999"))
         self.assertIn("Выберите матч", tg.messages[0][1])
+
+    def test_open_registration_allows_username_from_allowlist(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(
+            make_config(open_registration_enabled=True, allowed_usernames=frozenset({"new_user"})),
+            repo,
+            tg,
+        )
+
+        bot.handle_update(message_update("/predict", telegram_id=999, username="new_user"))
+
+        self.assertIsNotNone(repo.get_participant_by_telegram_id("999"))
+        self.assertIn("Выберите матч", tg.messages[0][1])
+
+    def test_open_registration_rejects_username_outside_allowlist(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(
+            make_config(open_registration_enabled=True, allowed_usernames=frozenset({"allowed_user"})),
+            repo,
+            tg,
+        )
+
+        bot.handle_update(message_update("/predict", telegram_id=999, username="new_user"))
+
+        self.assertIsNone(repo.get_participant_by_telegram_id("999"))
+        self.assertIn("добавить @new_user", tg.messages[-1][1])
 
     def test_invite_code_cannot_rebind_existing_participant_to_other_user(self) -> None:
         repo = FakeRepository()

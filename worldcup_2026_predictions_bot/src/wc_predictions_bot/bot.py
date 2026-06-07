@@ -78,7 +78,11 @@ class PredictionBot:
             and self.config.open_registration_enabled
             and not (command == "/start" and arg.strip())
         ):
-            participant = self._register_open_participant(user)
+            if self._can_register_open_participant(user):
+                participant = self._register_open_participant(user)
+            else:
+                self._send_access_request_notice(chat_id, user)
+                return
         LOG.info(
             "Handling message command=%s chat_type=%s participant_found=%s",
             command,
@@ -218,6 +222,25 @@ class PredictionBot:
             display_name=display_name,
             created_at=self._now_iso(),
         )
+
+    def _can_register_open_participant(self, user: dict[str, Any]) -> bool:
+        if not self.config.allowed_usernames:
+            return True
+        username = user.get("username", "").strip().lstrip("@").lower()
+        return bool(username and username in self.config.allowed_usernames)
+
+    def _send_access_request_notice(self, chat_id: int, user: dict[str, Any]) -> None:
+        username = user.get("username", "").strip()
+        if username:
+            self.telegram.send_message(
+                chat_id,
+                f"Доступ к тесту пока по списку участников. Попросите организатора добавить @{username}.",
+            )
+        else:
+            self.telegram.send_message(
+                chat_id,
+                "Доступ к тесту пока по списку участников. Укажите Telegram username и попросите организатора добавить его.",
+            )
 
     def _display_name(self, user: dict[str, Any]) -> str:
         full_name = " ".join(

@@ -380,6 +380,7 @@ def _result(row: dict[str, str]) -> MatchResult:
     return MatchResult(
         match_id=row.get("match_id", ""),
         actual_score=row.get("actual_score", "").replace(":", "-"),
+        status=row.get("status", "final"),
         goals=_split_names(row.get("goals", "")),
         assists=_split_names(row.get("assists", "")),
         own_goals=_split_names(row.get("own_goals", "")),

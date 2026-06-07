@@ -96,6 +96,13 @@ python -m wc_predictions_bot.set_webhook \
 - `/help` shows rules.
 - `/authors MATCH_ID | Автор1 | Автор2` updates only G+A authors for an existing prediction before deadline.
 
+## Access Modes
+
+- Invite/PIN mode: participants bind through `/start PIN`.
+- Test allowlist mode: set `OPEN_REGISTRATION_ENABLED=true` and `ALLOWED_USERNAMES=user1,user2`.
+- If `ALLOWED_USERNAMES` is set, only listed Telegram usernames can auto-register without PIN.
+- Users outside the list get a message asking them to contact the organizer.
+
 Admin:
 
 - `/publish MATCH_ID` publishes closed predictions to `TOURNAMENT_CHAT_ID` after deadline and marks latest rows locked.
@@ -114,6 +121,8 @@ Hard server-side checks:
 - direct `/submit` and `/authors` player typos are rejected with roster-based suggestions;
 - G+A authors inside one prediction must be distinct;
 - selected author was not already used by the same participant in other latest predictions.
+- results with status `cancelled`, `technical`, or `void` are ignored in scoring;
+- own goals do not give author points.
 
 ## Smoke Tests
 

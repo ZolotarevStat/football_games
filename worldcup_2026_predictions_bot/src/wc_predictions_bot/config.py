@@ -19,14 +19,12 @@ class Config:
     draft_ttl_seconds: int
     telegram_trust_env_proxy: bool
     open_registration_enabled: bool
+    allowed_usernames: frozenset[str]
 
     @classmethod
     def from_env(cls) -> "Config":
-        admins = {
-            username.strip().lstrip("@").lower()
-            for username in re.split(r"[,;]", os.getenv("ADMIN_USERNAMES", "az_stat,SanMorocco"))
-            if username.strip()
-        }
+        admins = _parse_usernames(os.getenv("ADMIN_USERNAMES", "az_stat,SanMorocco"))
+        allowed_usernames = _parse_usernames(os.getenv("ALLOWED_USERNAMES", ""))
         return cls(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             spreadsheet_id=os.getenv("GOOGLE_SPREADSHEET_ID", ""),
@@ -39,4 +37,13 @@ class Config:
             draft_ttl_seconds=int(os.getenv("DRAFT_TTL_SECONDS", "1800")),
             telegram_trust_env_proxy=os.getenv("TELEGRAM_TRUST_ENV_PROXY", "").lower() in {"1", "true", "yes"},
             open_registration_enabled=os.getenv("OPEN_REGISTRATION_ENABLED", "").lower() in {"1", "true", "yes"},
+            allowed_usernames=frozenset(allowed_usernames),
         )
+
+
+def _parse_usernames(value: str) -> set[str]:
+    return {
+        username.strip().lstrip("@").lower()
+        for username in re.split(r"[,;]", value)
+        if username.strip()
+    }
