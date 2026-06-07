@@ -58,9 +58,7 @@ MexSAf | 2-1 | final | Рауль Хименес, Икраам Рейнерс, �
 
 ## 4. Проверить логи при проблеме
 
-```bash
-ssh yc-user@<vm-ip> journalctl -u wc-predictions-bot -n 80 --no-pager
-```
+Проверьте логи runtime-сервера по внутреннему runbook. Не публикуйте реальные IP, SSH-пользователей и локальные пути в репозитории.
 
 ## Scoring rules
 

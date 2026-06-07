@@ -14,8 +14,8 @@ The repository is personal and should be treated as private by default.
 - Codex may work in this repository only when the current task is explicitly about `football_games`.
 - Codex must not make code, notebook, data, commit, push, branch, or pull-request changes without explicit user agreement in the current conversation.
 - For every non-trivial change, first state the planned files and intended behavior, then wait for confirmation unless the user has already approved the exact action.
-- Do not use Avito integrations from this repository.
-- Do not mix work context into this repository.
+- Do not use workplace/internal integrations from this repository.
+- Do not mix workplace context into this repository.
 - Do not publish or upload local datasets unless the user explicitly asks.
 
 ## Privacy Rules
@@ -45,4 +45,3 @@ The repository is personal and should be treated as private by default.
 - `data/raw/` - private raw exports, ignored by git.
 - `data/processed/` - derived local data, ignored by git.
 - `output/` - generated Excel and reports, ignored by git.
-
