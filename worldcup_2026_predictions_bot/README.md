@@ -40,6 +40,7 @@ Durable-данные живут только в Google Sheets. В памяти �
 - `scoring_rules`
 
 Инструкция для организатора по заполнению результатов: `ORGANIZER_GUIDE.md`.
+Smoke-сценарий одного тестового матча: `SMOKE_TEST_SCENARIO.md`.
 
 Создать/обновить заголовки:
 
@@ -89,6 +90,7 @@ python -m wc_predictions_bot.set_webhook \
 ## User Flow
 
 - `/start` -> bind by invite/PIN.
+- `/matches` shows compact open match IDs.
 - `/predict` -> choose open match.
 - Enter 7 unique scores, comma-separated: `1-0,1-1,2-0,0-0,2-1,1-2,0-1`.
 - Choose one G+A author from team 1 active roster, sorted by G+A priority.
@@ -96,6 +98,7 @@ python -m wc_predictions_bot.set_webhook \
 - Confirm save.
 - `/my` shows latest predictions.
 - `/help` shows rules.
+- `/rules` shows detailed rules.
 - `/authors MATCH_ID | Автор1 | Автор2` updates only G+A authors for an existing prediction before deadline.
 
 ## Access Modes
@@ -108,6 +111,8 @@ python -m wc_predictions_bot.set_webhook \
 Admin:
 
 - `/publish MATCH_ID` publishes closed predictions to `TOURNAMENT_CHAT_ID` after deadline and marks latest rows locked.
+- `/status MATCH_ID` shows submitted/missing participants for a match.
+- `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
 - `/leaderboard` publishes `leaderboard` sheet if it is filled.
 
 ## Validation

@@ -147,15 +147,21 @@ def build_leaderboard_rows(
 def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таблица") -> str:
     if not rows:
         return "Таблица пока пустая."
-    lines = [title, "Место | Участник | Очки | Счета | Игроки"]
+    lines = [title, "Место | Участник | Очки | Детализация"]
     for row in rows[:40]:
         rank = row.get("rank", "")
         medal = {"1": "🥇", "2": "🥈", "3": "🥉"}.get(rank, f"{rank}.")
+        matches_scored = row.get("matches_scored", "0")
+        score_points = row.get("score_points", "0")
+        author_points = row.get("author_points", "0")
+        total_points = row.get("total_points", "0")
         lines.append(
             f"{medal} {row.get('display_name') or row.get('participant_id')} — "
-            f"{row.get('total_points', '0')} "
-            f"(счета {row.get('score_points', '0')}, игроки {row.get('author_points', '0')})"
+            f"{total_points} очк. "
+            f"({matches_scored} матч.; счета {score_points}, игроки {author_points})"
         )
+    if len(rows) > 40:
+        lines.append(f"...и еще {len(rows) - 40}")
     return "\n".join(lines)
 
 
