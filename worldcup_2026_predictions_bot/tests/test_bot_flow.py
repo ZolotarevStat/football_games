@@ -143,6 +143,26 @@ class BotFlowTest(unittest.TestCase):
 
         self.assertIn("Дедлайн", tg.messages[-1][1])
 
+    def test_matches_command_shows_compact_open_match_ids_without_binding(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/matches", telegram_id=999, chat_type="supergroup"))
+
+        self.assertIn("Ближайшие открытые матчи", tg.messages[-1][1])
+        self.assertIn("m1", tg.messages[-1][1])
+        self.assertNotIn("m2", tg.messages[-1][1])
+
+    def test_rules_command_is_available_without_binding(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/rules", telegram_id=999, chat_type="supergroup"))
+
+        self.assertIn("Правила прогноза", tg.messages[-1][1])
+
     def test_used_author_is_hidden_from_buttons(self) -> None:
         repo = FakeRepository()
         repo.latest.append(
@@ -363,6 +383,28 @@ class BotFlowTest(unittest.TestCase):
         self.assertEqual(repo.leaderboard_rows[0]["display_name"], "Тестовый участник")
         self.assertIn("🏆 Таблица", tg.messages[-1][1])
         self.assertIn("Тестовый участник", tg.messages[-1][1])
+        self.assertIn("матч.; счета", tg.messages[-1][1])
+
+    def test_admin_status_shows_missing_participants_without_predictions(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/status m1", telegram_id=101, username="az_stat"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Статус прогнозов", text)
+        self.assertIn("Сдали: 1/2", text)
+        self.assertIn("Новый участник", text)
 
     def test_group_plain_text_is_ignored(self) -> None:
         repo = FakeRepository()

@@ -66,6 +66,16 @@ class PredictionBot:
         command, _, arg = text.partition(" ")
         command = self._normalize_command(command)
 
+        if command == "/help":
+            self._send_help(chat_id)
+            return
+        if command == "/rules" or text == "Правила":
+            self._send_rules(chat_id)
+            return
+        if command == "/matches":
+            self._send_matches(chat_id)
+            return
+
         if not is_private and command not in self._group_commands():
             if command in {"/start", "/predict", "/submit", "/authors", "/my", "/cancel"}:
                 self._send_private_chat_notice(chat_id)
@@ -139,16 +149,16 @@ class PredictionBot:
                 self._send_private_chat_notice(chat_id)
                 return
             self._send_my_predictions(chat_id, participant)
-        elif command == "/help" or text == "Правила":
-            self._send_help(chat_id)
         elif command == "/publish":
             self._publish_locked(chat_id, participant, username, arg.strip())
         elif command == "/leaderboard":
             self._publish_leaderboard(chat_id, participant, username)
         elif command == "/score":
             self._score_results(chat_id, participant, username, arg.strip())
+        elif command == "/status":
+            self._send_match_status(chat_id, participant, username, arg.strip())
         else:
-            self.telegram.send_message(chat_id, "Команда не распознана. Используйте /predict, /my, /authors, /leaderboard или /help.")
+            self.telegram.send_message(chat_id, "Команда не распознана. Используйте /matches, /predict, /my, /authors или /help.")
 
     def _handle_callback(self, callback: dict[str, Any], update_id: str) -> None:
         callback_id = callback.get("id", "")
@@ -166,7 +176,11 @@ class PredictionBot:
             LOG.warning("answerCallbackQuery failed; continuing callback handling")
         participant = self.repository.get_participant_by_telegram_id(telegram_id)
         if not participant and self.config.open_registration_enabled and self._is_private_message(message):
-            participant = self._register_open_participant(user)
+            if self._can_register_open_participant(user):
+                participant = self._register_open_participant(user)
+            else:
+                self._send_access_request_notice(chat_id, user)
+                return
         if not participant:
             self.telegram.send_message(chat_id, "Сначала привяжите аккаунт через /start.")
             return
@@ -209,7 +223,7 @@ class PredictionBot:
             chat_id,
             f"Готово, {participant.display_name}.\n"
             "Прогнозы отправляются только в личке этому боту.\n"
-            "Команды: /predict - сделать прогноз, /my - мои прогнозы, /help - правила.",
+            "Команды: /matches - матчи, /predict - сделать прогноз, /my - мои прогнозы, /help - помощь.",
         )
 
     def _register_open_participant(self, user: dict[str, Any]) -> Participant:
@@ -270,6 +284,23 @@ class PredictionBot:
         lines.append("Открытые MATCH_ID:")
         for match in matches:
             lines.append(f"{match.match_id}: {match.team1} - {match.team2}")
+        self.telegram.send_message(chat_id, "\n".join(lines))
+
+    def _send_matches(self, chat_id: int) -> None:
+        matches = self._visible_open_matches(self.repository.get_open_matches(self._now_iso()))
+        if not matches:
+            self.telegram.send_message(chat_id, "Открытых матчей на ближайший слот сейчас нет.")
+            return
+        lines = [
+            "🗓 Ближайшие открытые матчи:",
+            "Используйте MATCH_ID в /submit или /authors.",
+            "",
+        ]
+        for match in matches:
+            lines.append(
+                f"{match.match_id} — {match.team1} - {match.team2}\n"
+                f"дедлайн {match.deadline_msk:%d.%m %H:%M} МСК"
+            )
         self.telegram.send_message(chat_id, "\n".join(lines))
 
     def _visible_open_matches(self, matches: list[Match]) -> list[Match]:
@@ -668,19 +699,73 @@ class PredictionBot:
             f"{format_leaderboard(result.leaderboard_rows)}",
         )
 
+    def _send_match_status(self, chat_id: int, participant: Participant, username: str, match_id: str) -> None:
+        if not self._is_admin(participant, username):
+            self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
+            return
+        if not match_id:
+            self.telegram.send_message(chat_id, "Формат: /status MATCH_ID")
+            return
+        match = self.repository.get_match(match_id)
+        if not match:
+            self.telegram.send_message(chat_id, "Матч не найден.")
+            return
+
+        participants = self._forecast_participants()
+        submitted_predictions = self.repository.get_latest_for_match(match.match_id)
+        submitted_ids = {prediction.participant_id for prediction in submitted_predictions}
+        submitted = [participant for participant in participants if participant.participant_id in submitted_ids]
+        missing = [participant for participant in participants if participant.participant_id not in submitted_ids]
+
+        lines = [
+            f"📋 Статус прогнозов: {match.match_id}",
+            f"{match.team1} - {match.team2}",
+            f"Дедлайн: {match.deadline_msk:%d.%m %H:%M} МСК",
+            f"Сдали: {len(submitted)}/{len(participants)}",
+        ]
+        if missing:
+            lines.append("")
+            lines.append("Не сдали:")
+            lines.extend(f"- {participant.display_name}" for participant in missing[:40])
+            if len(missing) > 40:
+                lines.append(f"...и еще {len(missing) - 40}")
+        else:
+            lines.append("")
+            lines.append("Все активные участники сдали прогноз.")
+        self.telegram.send_message(chat_id, "\n".join(lines))
+
+    def _forecast_participants(self) -> list[Participant]:
+        return [
+            participant
+            for participant in self.repository.get_participants()
+            if participant.status.strip().lower() == "active"
+        ]
+
     def _send_help(self, chat_id: int) -> None:
         self.telegram.send_message(
             chat_id,
-            "🎮 Команды: /predict - сделать или изменить прогноз, /my - мои прогнозы, /cancel - сбросить черновик.\n"
-            "🔒 Куда отправлять: только в личку этому боту, не в общий чат.\n"
-            "⚡ Быстрое сохранение: /submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2\n"
-            "🧩 Быстрая замена авторов: /authors MATCH_ID | Автор1 | Автор2\n"
-            "✅ В прогнозе нужно 7 уникальных счетов и по одному автору Г+П из активной заявки каждой команды.\n"
-            "✏️ Редактирование: повторный /submit по тому же MATCH_ID перезаписывает прогноз.\n"
-            "✏️ Только авторы: /authors меняет авторов и оставляет счета без изменений.\n"
-            "⏰ Дедлайн: за 5 минут до начала матча; после дедлайна новые прогнозы и правки блокируются сервером.\n"
+            "🎮 /matches - ближайшие матчи и MATCH_ID\n"
+            "📝 /predict - сделать или изменить прогноз\n"
+            "🔒 /my - мои прогнозы\n"
+            "⚡ /submit MATCH_ID ... - быстрое сохранение\n"
+            "🧩 /authors MATCH_ID | Автор1 | Автор2 - заменить только авторов\n"
+            "📘 /rules - подробные правила\n"
+            "↩️ /cancel - сбросить черновик",
+        )
+
+    def _send_rules(self, chat_id: int) -> None:
+        self.telegram.send_message(
+            chat_id,
+            "📘 Правила прогноза\n"
+            "🔒 Отправляйте прогнозы только в личку боту.\n"
+            "✅ Нужно 7 уникальных счетов в порядке вероятности.\n"
+            "⚽ Выберите по одному автору Г+П из активной заявки каждой команды.\n"
             "♻️ Игрока нельзя использовать повторно в актуальных прогнозах.\n"
-            "🏆 Организатор: /score MATCH_ID, /score all, /leaderboard.",
+            "✏️ Повторный /submit по тому же MATCH_ID перезаписывает прогноз.\n"
+            "🧩 /authors меняет только авторов и оставляет счета без изменений.\n"
+            "⏰ После дедлайна новые прогнозы и правки блокируются сервером.\n\n"
+            "Пример:\n"
+            "/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2",
         )
 
     def _available_author_players(self, draft: PredictionDraft, match: Match, team: str) -> list[Player]:
@@ -727,7 +812,20 @@ class PredictionBot:
         return command
 
     def _group_commands(self) -> set[str]:
-        return {"/start", "/predict", "/submit", "/authors", "/my", "/help", "/publish", "/leaderboard", "/score"}
+        return {
+            "/start",
+            "/matches",
+            "/predict",
+            "/submit",
+            "/authors",
+            "/my",
+            "/help",
+            "/rules",
+            "/publish",
+            "/leaderboard",
+            "/score",
+            "/status",
+        }
 
     def _send_private_chat_notice(self, chat_id: int) -> None:
         self.telegram.send_message(
