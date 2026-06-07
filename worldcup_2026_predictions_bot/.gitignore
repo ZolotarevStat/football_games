@@ -1,0 +1,23 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+service-account*.json
+.yc_config/
+.yc_home/
+logs/
+launchd/
+*.log
+*.zip
+*.egg-info/
+build/
+dist/
+
+# Legacy hosting experiments; current MVP runtime is YC VM + systemd polling.
+Dockerfile
+Procfile
+railway.json
+render.yaml

@@ -1,0 +1,14 @@
+[project]
+name = "wc-predictions-bot"
+version = "0.1.0"
+description = "MVP Telegram bot for World Cup prediction tournament."
+requires-python = ">=3.11"
+dependencies = [
+  "requests==2.32.3",
+  "google-auth==2.35.0",
+  "google-api-python-client==2.149.0",
+  "openpyxl==3.1.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
