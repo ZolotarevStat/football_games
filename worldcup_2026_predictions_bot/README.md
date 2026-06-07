@@ -39,6 +39,8 @@ Durable-данные живут только в Google Sheets. В памяти �
 - `leaderboard`
 - `scoring_rules`
 
+Инструкция для организатора по заполнению результатов: `ORGANIZER_GUIDE.md`.
+
 Создать/обновить заголовки:
 
 ```bash
