@@ -490,6 +490,35 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("Сдали: 1/2", text)
         self.assertIn("Новый участник", text)
 
+    def test_admin_status_latest_uses_nearest_open_match(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/status_latest", telegram_id=101, username="az_stat"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Статус прогнозов: m1", text)
+        self.assertIn("Сдали: 1/2", text)
+
+    def test_status_latest_is_admin_only(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/status_latest", telegram_id=100, username="user"))
+
+        self.assertIn("только организаторам", tg.messages[-1][1])
+
     def test_admin_command_shows_admin_reference_only_to_admins(self) -> None:
         repo = FakeRepository()
         tg = RecordingTelegramApi()
@@ -501,6 +530,7 @@ class BotFlowTest(unittest.TestCase):
         bot.handle_update(message_update("/admin", telegram_id=101, username="az_stat"))
         self.assertIn("Админские команды", tg.messages[-1][1])
         self.assertIn("/status MATCH_ID", tg.messages[-1][1])
+        self.assertIn("/status_latest", tg.messages[-1][1])
 
     def test_group_plain_text_is_ignored(self) -> None:
         repo = FakeRepository()

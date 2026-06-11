@@ -164,6 +164,8 @@ class PredictionBot:
             self._score_results(chat_id, participant, username, arg.strip())
         elif command == "/status":
             self._send_match_status(chat_id, participant, username, arg.strip())
+        elif command == "/status_latest":
+            self._send_latest_match_status(chat_id, participant, username)
         elif command == "/admin":
             self._send_admin_help(chat_id, participant, username)
         else:
@@ -881,6 +883,16 @@ class PredictionBot:
             lines.append("Все активные участники сдали прогноз.")
         self.telegram.send_message(chat_id, "\n".join(lines))
 
+    def _send_latest_match_status(self, chat_id: int, participant: Participant, username: str) -> None:
+        if not self._is_admin(participant, username):
+            self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
+            return
+        open_matches = sorted(self.repository.get_open_matches(self._now_iso()), key=lambda match: match.kickoff_msk)
+        if not open_matches:
+            self.telegram.send_message(chat_id, "Открытых ближайших матчей сейчас нет.")
+            return
+        self._send_match_status(chat_id, participant, username, open_matches[0].match_id)
+
     def _forecast_participants(self) -> list[Participant]:
         return [
             participant
@@ -928,6 +940,7 @@ class PredictionBot:
             chat_id,
             "🛠 Админские команды\n"
             "📋 /status MATCH_ID — кто сдал прогноз по матчу\n"
+            "📋 /status_latest — кто сдал прогноз по ближайшему открытому матчу\n"
             "🔒 /publish MATCH_ID — опубликовать прогнозы после дедлайна\n"
             "🧮 /score MATCH_ID — пересчитать очки по матчу\n"
             "🧮 /score all — пересчитать очки по всем заполненным результатам\n"
@@ -1084,6 +1097,7 @@ class PredictionBot:
             "/leaderboard",
             "/score",
             "/status",
+            "/status_latest",
             "/admin",
         }
 
