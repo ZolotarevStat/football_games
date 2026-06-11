@@ -209,9 +209,7 @@ class PredictionBot:
             return
         if data == "back":
             self._delete_message_safely(chat_id, message_id)
-            participant = self.repository.get_participant_by_telegram_id(telegram_id) if self._is_private_message(message) else None
-            if participant:
-                self._send_dashboard(chat_id, participant)
+            self._handle_back_callback(chat_id, telegram_id, message)
             return
         participant = self.repository.get_participant_by_telegram_id(telegram_id)
         if not participant and self.config.open_registration_enabled and self._is_private_message(message):
@@ -258,6 +256,27 @@ class PredictionBot:
             self._delete_message_safely(chat_id, message_id)
             self.drafts.clear(telegram_id)
             self._send_dashboard(chat_id, participant, "Черновик сброшен.\n\nВыберите следующее действие:")
+
+    def _handle_back_callback(self, chat_id: int, telegram_id: str, message: dict[str, Any]) -> None:
+        state = self.drafts.get(telegram_id)
+        if state and state.step == "author2":
+            state.draft.author_team1 = ""
+            self.drafts.set(telegram_id, "author1", state.draft)
+            self._send_author_buttons(chat_id, state.draft, first_team=True)
+            return
+        if state and state.step == "author1":
+            match = self._require_match(state.draft.match_id)
+            self.drafts.set(telegram_id, "scores", state.draft)
+            self.telegram.send_message(
+                chat_id,
+                f"Введите новые 7 счетов для матча {match.team1} - {match.team2} через запятую.\n"
+                f"Текущие счета: {', '.join(state.draft.scores)}\n"
+                "Пример: 1-0,1-1,2-0,0-0,2-1,1-2,0-1",
+            )
+            return
+        participant = self.repository.get_participant_by_telegram_id(telegram_id) if self._is_private_message(message) else None
+        if participant:
+            self._send_dashboard(chat_id, participant)
 
     def _bind(self, chat_id: int, invite_code: str, telegram_id: str, username: str) -> None:
         participant = self.repository.bind_participant(invite_code, telegram_id, username, self._now_iso())

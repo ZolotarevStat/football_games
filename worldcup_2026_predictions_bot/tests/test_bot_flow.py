@@ -316,6 +316,52 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn((100, 9), tg.deleted_messages)
         self.assertIn("Выберите действие", tg.messages[-1][1])
 
+    def test_back_from_second_author_returns_to_first_author_without_losing_scores(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+        bot.handle_update(callback_update("m:m1", update_id=2))
+        bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("a1:m1:0", update_id=3))
+        bot.handle_update(callback_update("back", update_id=4))
+
+        self.assertIn((100, 4), tg.deleted_messages)
+        self.assertIn("Выберите автора Г+П для первой команды", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("Месси", button_names)
+        self.assertIn("Альварес", button_names)
+
+        bot.handle_update(callback_update("a1:m1:1", update_id=5))
+        bot.handle_update(callback_update("a2:m1:0", update_id=6))
+        bot.handle_update(callback_update("save:m1", update_id=7))
+
+        self.assertEqual(repo.latest[0].scores, ("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"))
+        self.assertEqual(repo.latest[0].author_team1, "Альварес")
+        self.assertEqual(repo.latest[0].author_team2, "Мбаппе")
+
+    def test_back_from_first_author_returns_to_score_input_for_same_match(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+        bot.handle_update(callback_update("m:m1", update_id=2))
+        bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("back", update_id=3))
+
+        self.assertIn((100, 3), tg.deleted_messages)
+        self.assertIn("Введите новые 7 счетов для матча Аргентина - Франция", tg.messages[-1][1])
+        self.assertIn("Текущие счета: 1-0, 1-1, 2-0, 0-0, 2-1, 1-2, 0-1", tg.messages[-1][1])
+
+        bot.handle_update(message_update("2-0,1-0,1-1,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("a1:m1:0", update_id=4))
+        bot.handle_update(callback_update("a2:m1:0", update_id=5))
+        bot.handle_update(callback_update("save:m1", update_id=6))
+
+        self.assertEqual(repo.latest[0].scores, ("2-0", "1-0", "1-1", "0-0", "2-1", "1-2", "0-1"))
+
     def test_admin_publish_locks_and_posts_to_tournament_chat(self) -> None:
         repo = FakeRepository()
         repo.latest.append(
