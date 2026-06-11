@@ -28,8 +28,11 @@ def main() -> None:
         raise RuntimeError("No matching rows in results.")
     bot.repository.replace_scoring_rows(result.scoring_rows)
     bot.repository.replace_leaderboard_rows(result.leaderboard_rows)
+    for sheet_name, rows in result.analytics_rows.items():
+        bot.repository.replace_analytics_rows(sheet_name, rows)
     print(f"Updated scoring rows: {len(result.scoring_rows)}")
     print(f"Updated leaderboard rows: {len(result.leaderboard_rows)}")
+    print(f"Updated analytics sheets: {len(result.analytics_rows)}")
     print(format_leaderboard(result.leaderboard_rows))
 
 

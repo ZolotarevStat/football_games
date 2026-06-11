@@ -22,7 +22,7 @@ class FakeRepository(PredictionRepository):
             "admin": Participant(
                 participant_id="admin",
                 display_name="Организатор",
-                telegram_username="az_stat",
+                telegram_username="organizer_username",
                 telegram_id="101",
                 invite_code="ADMIN",
                 status="admin",
@@ -69,6 +69,7 @@ class FakeRepository(PredictionRepository):
         self.results: list[MatchResult] = []
         self.scoring_rows: list[dict[str, str]] = []
         self.leaderboard_rows: list[dict[str, str]] = []
+        self.analytics_rows: dict[str, list[dict[str, str]]] = {}
         self.raw_rows: list[dict[str, str]] = []
         self.locked_matches: list[str] = []
         self.notifications: list[dict[str, str]] = []
@@ -164,6 +165,9 @@ class FakeRepository(PredictionRepository):
 
     def replace_leaderboard_rows(self, rows: list[dict[str, str]]) -> None:
         self.leaderboard_rows = rows
+
+    def replace_analytics_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> None:
+        self.analytics_rows[sheet_name] = rows
 
     def save_prediction(
         self,

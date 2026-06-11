@@ -309,7 +309,7 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/publish m2", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/publish m2", telegram_id=101, username="organizer_username"))
 
         self.assertIn("m2", repo.locked_matches)
         self.assertIn("Прогнозы закрыты", tg.messages[-2][1])
@@ -461,13 +461,14 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/score all", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/score all", telegram_id=101, username="organizer_username"))
 
         self.assertEqual(repo.scoring_rows[0]["total_points"], "18")
+        self.assertEqual(repo.analytics_rows["leaderboard_by_total"][0]["display_name"], "Тестовый участник")
         self.assertEqual(repo.leaderboard_rows[0]["display_name"], "Тестовый участник")
         self.assertIn("🏆 Таблица", tg.messages[-1][1])
         self.assertIn("Тестовый участник", tg.messages[-1][1])
-        self.assertIn("матч.; счета", tg.messages[-1][1])
+        self.assertIn("счет 12 | голы 4 | пасы 2", tg.messages[-1][1])
 
     def test_admin_status_shows_missing_participants_without_predictions(self) -> None:
         repo = FakeRepository()
@@ -483,7 +484,7 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/status m1", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/status m1", telegram_id=101, username="organizer_username"))
 
         text = tg.messages[-1][1]
         self.assertIn("Статус прогнозов", text)
@@ -504,7 +505,7 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/status_latest", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/status_latest", telegram_id=101, username="organizer_username"))
 
         text = tg.messages[-1][1]
         self.assertIn("Статус прогнозов: m1", text)
@@ -527,7 +528,7 @@ class BotFlowTest(unittest.TestCase):
         bot.handle_update(message_update("/admin", telegram_id=100, username="user"))
         self.assertIn("только организаторам", tg.messages[-1][1])
 
-        bot.handle_update(message_update("/admin", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/admin", telegram_id=101, username="organizer_username"))
         self.assertIn("Админские команды", tg.messages[-1][1])
         self.assertIn("/status MATCH_ID", tg.messages[-1][1])
         self.assertIn("/status_latest", tg.messages[-1][1])

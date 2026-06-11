@@ -256,6 +256,11 @@ class SheetsRepository(PredictionRepository):
     def replace_leaderboard_rows(self, rows: list[dict[str, str]]) -> None:
         self._replace_dict_rows("leaderboard", rows)
 
+    def replace_analytics_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> None:
+        if sheet_name not in SHEET_HEADERS:
+            raise ValueError(f"Unknown analytics sheet: {sheet_name}")
+        self._replace_dict_rows(sheet_name, rows)
+
     def save_prediction(
         self,
         *,

@@ -43,7 +43,7 @@ def main() -> None:
             [
                 "test_anton",
                 "Anton Test",
-                "az_stat",
+                "organizer_username",
                 "",
                 "TESTANTON",
                 "active",

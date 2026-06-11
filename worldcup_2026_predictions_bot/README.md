@@ -1,11 +1,5 @@
 # Telegram Bot MVP
 
-Минимальная архитектура для webhook:
-
-```text
-Telegram webhook -> Python backend / cloud function -> Google Sheets
-```
-
 Текущий внешний MVP runtime:
 
 ```text
@@ -37,6 +31,12 @@ Durable-данные живут только в Google Sheets. В памяти �
 - `results`
 - `scoring`
 - `leaderboard`
+- `leaderboard_by_total`
+- `leaderboard_by_score`
+- `leaderboard_by_goals`
+- `leaderboard_by_assists`
+- `match_author_picks`
+- `match_first_score_belief`
 - `scoring_rules`
 
 Инструкция для организатора по заполнению результатов: `ORGANIZER_GUIDE.md`.
@@ -60,14 +60,6 @@ export TELEGRAM_BOT_TOKEN=...
 export GOOGLE_SPREADSHEET_ID=...
 export GOOGLE_SERVICE_ACCOUNT_FILE=...
 export TOURNAMENT_CHAT_ID=...
-python -m wc_predictions_bot.server
-```
-
-Healthcheck: `GET /health`. Webhook endpoint: `POST /webhook`.
-
-Quick local polling smoke, without deployment:
-
-```bash
 .venv/bin/python -m wc_predictions_bot.polling
 ```
 
@@ -77,15 +69,7 @@ External worker command on YC VM:
 python -m wc_predictions_bot.polling
 ```
 
-Cloud Function entrypoint: `main.handler`. Deployment checklist: see `DEPLOY.md`.
-
-Set Telegram webhook after deployment:
-
-```bash
-python -m wc_predictions_bot.set_webhook \
-  --token "$TELEGRAM_BOT_TOKEN" \
-  --url "https://<deployed-host>/webhook"
-```
+Cloud Functions/webhook experiment files are archived under `legacy/cloud_functions/` and are not the active runtime path.
 
 ## User Flow
 
@@ -113,6 +97,7 @@ Admin:
 - `/publish MATCH_ID` publishes closed predictions to `TOURNAMENT_CHAT_ID` after deadline and marks latest rows locked.
 - `/status MATCH_ID` shows submitted/missing participants for a match.
 - `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
+- `/score` updates `scoring`, `leaderboard`, metric leaderboards, author-pick analytics, and first-score belief analytics.
 - `/leaderboard` publishes `leaderboard` sheet if it is filled.
 - Daily notifications are sent at 12:00 MSK to users who have already submitted at least one prediction when there are open matches in the next 24 hours.
 

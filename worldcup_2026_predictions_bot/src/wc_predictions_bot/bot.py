@@ -839,12 +839,15 @@ class PredictionBot:
             return
         self.repository.replace_scoring_rows(result.scoring_rows)
         self.repository.replace_leaderboard_rows(result.leaderboard_rows)
+        for sheet_name, rows in result.analytics_rows.items():
+            self.repository.replace_analytics_rows(sheet_name, rows)
         scope = "всем матчам" if not match_id else match_id
         self.telegram.send_message(
             chat_id,
             f"✅ Пересчет по {scope} готов.\n"
             f"Матчей с результатами: {len(result.match_ids)}\n"
-            f"Строк scoring: {len(result.scoring_rows)}\n\n"
+            f"Строк scoring: {len(result.scoring_rows)}\n"
+            f"Аналитика: {len(result.analytics_rows)} листов\n\n"
             f"{format_leaderboard(result.leaderboard_rows)}",
         )
 

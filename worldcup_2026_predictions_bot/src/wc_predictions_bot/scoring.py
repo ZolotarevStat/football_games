@@ -52,7 +52,16 @@ TIEBREAKER_FIELDS = (
 class ScoringResult:
     scoring_rows: list[dict[str, str]]
     leaderboard_rows: list[dict[str, str]]
+    analytics_rows: dict[str, list[dict[str, str]]]
     match_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AuthorScore:
+    total_points: int
+    goal_points: int
+    assist_points: int
+    note: str
 
 
 def calculate_scoring(
@@ -75,6 +84,8 @@ def calculate_scoring(
     leaderboard: dict[str, dict[str, int]] = defaultdict(lambda: {
         "matches_scored": 0,
         "score_points": 0,
+        "goal_points": 0,
+        "assist_points": 0,
         "author_points": 0,
         "total_points": 0,
         **{field: 0 for field in TIEBREAKER_FIELDS},
@@ -87,7 +98,8 @@ def calculate_scoring(
         match = match_by_id.get(prediction.match_id)
         stage = stage_key(match)
         score_points, score_note = score_prediction(prediction, result, stage)
-        author_points, author_note = author_prediction(prediction, result, stage)
+        author_score = author_prediction_breakdown(prediction, result, stage)
+        author_points = author_score.total_points
         total_points = score_points + author_points
         participant = participant_by_id.get(prediction.participant_id)
         match_name = f"{match.team1} - {match.team2}" if match else prediction.match_name
@@ -99,23 +111,36 @@ def calculate_scoring(
                 "match_name": match_name or prediction.match_id,
                 "stage": stage,
                 "score_points": str(score_points),
+                "goal_points": str(author_score.goal_points),
+                "assist_points": str(author_score.assist_points),
                 "author_points": str(author_points),
                 "penalties": "0",
                 "total_points": str(total_points),
-                "explanation": "; ".join(part for part in [score_note, author_note] if part),
+                "explanation": "; ".join(part for part in [score_note, author_score.note] if part),
             }
         )
         totals = leaderboard[prediction.participant_id]
         totals["matches_scored"] += 1
         totals["score_points"] += score_points
+        totals["goal_points"] += author_score.goal_points
+        totals["assist_points"] += author_score.assist_points
         totals["author_points"] += author_points
         totals["total_points"] += total_points
         totals[f"{stage}_points"] += total_points
 
     leaderboard_rows = build_leaderboard_rows(leaderboard, participant_by_id, now_iso)
+    analytics_rows = build_analytics_rows(
+        predictions=predictions,
+        result_by_match=result_by_match,
+        match_by_id=match_by_id,
+        participant_by_id=participant_by_id,
+        leaderboard_rows=leaderboard_rows,
+        now_iso=now_iso,
+    )
     return ScoringResult(
         scoring_rows=scoring_rows,
         leaderboard_rows=leaderboard_rows,
+        analytics_rows=analytics_rows,
         match_ids=tuple(sorted(result_by_match)),
     )
 
@@ -135,19 +160,28 @@ def is_counted_result(result: MatchResult) -> bool:
 
 
 def author_prediction(prediction: LatestPrediction, result: MatchResult, stage: str = "group") -> tuple[int, str]:
+    author_score = author_prediction_breakdown(prediction, result, stage)
+    return author_score.total_points, author_score.note
+
+
+def author_prediction_breakdown(prediction: LatestPrediction, result: MatchResult, stage: str = "group") -> AuthorScore:
     goals = Counter(result.goals)
     assists = Counter(result.assists)
     own_goals = Counter(result.own_goals)
-    goal_points = STAGE_GOAL_POINTS.get(stage, GOAL_POINTS)
-    assist_points = STAGE_ASSIST_POINTS.get(stage, ASSIST_POINTS)
-    points = 0
+    goal_point_value = STAGE_GOAL_POINTS.get(stage, GOAL_POINTS)
+    assist_point_value = STAGE_ASSIST_POINTS.get(stage, ASSIST_POINTS)
+    total_goal_points = 0
+    total_assist_points = 0
     notes: list[str] = []
 
     for author in [prediction.author_team1, prediction.author_team2]:
         author_goals = max(0, goals[author] - own_goals[author])
         author_assists = assists[author]
-        author_points = author_goals * goal_points + author_assists * assist_points
-        points += author_points
+        author_goal_points = author_goals * goal_point_value
+        author_assist_points = author_assists * assist_point_value
+        author_points = author_goal_points + author_assist_points
+        total_goal_points += author_goal_points
+        total_assist_points += author_assist_points
         if author_points:
             parts = []
             if author_goals:
@@ -157,8 +191,8 @@ def author_prediction(prediction: LatestPrediction, result: MatchResult, stage: 
             notes.append(f"{author}: {', '.join(parts)} (+{author_points})")
 
     if not notes:
-        return 0, "авторы без Г+П"
-    return points, "; ".join(notes)
+        return AuthorScore(0, 0, 0, "авторы без Г+П")
+    return AuthorScore(total_goal_points + total_assist_points, total_goal_points, total_assist_points, "; ".join(notes))
 
 
 def build_leaderboard_rows(
@@ -190,6 +224,8 @@ def build_leaderboard_rows(
                 "display_name": participant.display_name if participant else participant_id,
                 "matches_scored": str(totals["matches_scored"]),
                 "score_points": str(totals["score_points"]),
+                "goal_points": str(totals["goal_points"]),
+                "assist_points": str(totals["assist_points"]),
                 "author_points": str(totals["author_points"]),
                 "tour_points": str(totals["total_points"]),
                 "total_points": str(totals["total_points"]),
@@ -203,22 +239,181 @@ def build_leaderboard_rows(
 def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таблица") -> str:
     if not rows:
         return "Таблица пока пустая."
-    lines = [title, "Место | Участник | Очки | Детализация"]
+    lines = [title, "# | Участник | Итого | Счет | Голы | Пасы"]
     for row in rows[:40]:
         rank = row.get("rank", "")
         medal = {"1": "🥇", "2": "🥈", "3": "🥉"}.get(rank, f"{rank}.")
-        matches_scored = row.get("matches_scored", "0")
         score_points = row.get("score_points", "0")
-        author_points = row.get("author_points", "0")
+        goal_points = row.get("goal_points", "")
+        assist_points = row.get("assist_points", "")
+        if not goal_points and not assist_points:
+            goal_points = row.get("author_points", "0")
+            assist_points = "0"
         total_points = row.get("total_points", "0")
         lines.append(
             f"{medal} {row.get('display_name') or row.get('participant_id')} — "
-            f"{total_points} очк. "
-            f"({matches_scored} матч.; счета {score_points}, игроки {author_points})"
+            f"{total_points} | счет {score_points} | голы {goal_points} | пасы {assist_points}"
         )
     if len(rows) > 40:
         lines.append(f"...и еще {len(rows) - 40}")
     return "\n".join(lines)
+
+
+def build_analytics_rows(
+    *,
+    predictions: list[LatestPrediction],
+    result_by_match: dict[str, MatchResult],
+    match_by_id: dict[str, Match],
+    participant_by_id: dict[str, Participant],
+    leaderboard_rows: list[dict[str, str]],
+    now_iso: str,
+) -> dict[str, list[dict[str, str]]]:
+    counted_predictions = [
+        prediction
+        for prediction in predictions
+        if prediction.match_id in result_by_match
+    ]
+    return {
+        "leaderboard_by_total": build_metric_leaderboard_rows(leaderboard_rows, "total_points", now_iso),
+        "leaderboard_by_score": build_metric_leaderboard_rows(leaderboard_rows, "score_points", now_iso),
+        "leaderboard_by_goals": build_metric_leaderboard_rows(leaderboard_rows, "goal_points", now_iso),
+        "leaderboard_by_assists": build_metric_leaderboard_rows(leaderboard_rows, "assist_points", now_iso),
+        "match_author_picks": build_match_author_pick_rows(counted_predictions, match_by_id, participant_by_id, now_iso),
+        "match_first_score_belief": build_first_score_belief_rows(counted_predictions, match_by_id, participant_by_id, now_iso),
+    }
+
+
+def build_metric_leaderboard_rows(
+    leaderboard_rows: list[dict[str, str]],
+    metric: str,
+    now_iso: str,
+) -> list[dict[str, str]]:
+    rows = sorted(
+        leaderboard_rows,
+        key=lambda row: (-int(row.get(metric, "0") or 0), -int(row.get("total_points", "0") or 0), row.get("display_name", "")),
+    )
+    output: list[dict[str, str]] = []
+    previous_value: int | None = None
+    rank = 0
+    for index, row in enumerate(rows, start=1):
+        metric_value = int(row.get(metric, "0") or 0)
+        if metric_value != previous_value:
+            rank = index
+            previous_value = metric_value
+        output.append(
+            {
+                "rank": str(rank),
+                "participant_id": row.get("participant_id", ""),
+                "display_name": row.get("display_name", ""),
+                "metric": metric,
+                "metric_points": str(metric_value),
+                "total_points": row.get("total_points", "0"),
+                "score_points": row.get("score_points", "0"),
+                "goal_points": row.get("goal_points", "0"),
+                "assist_points": row.get("assist_points", "0"),
+                "updated_at": now_iso,
+            }
+        )
+    return output
+
+
+def build_match_author_pick_rows(
+    predictions: list[LatestPrediction],
+    match_by_id: dict[str, Match],
+    participant_by_id: dict[str, Participant],
+    now_iso: str,
+) -> list[dict[str, str]]:
+    picks: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for prediction in predictions:
+        match = match_by_id.get(prediction.match_id)
+        team1 = match.team1 if match else "team1"
+        team2 = match.team2 if match else "team2"
+        participant_name = participant_display_name(prediction, participant_by_id)
+        if prediction.author_team1:
+            picks[(prediction.match_id, team1, prediction.author_team1)].add(participant_name)
+        if prediction.author_team2:
+            picks[(prediction.match_id, team2, prediction.author_team2)].add(participant_name)
+
+    rows: list[dict[str, str]] = []
+    for (match_id, team, player_name), participants in sorted(
+        picks.items(),
+        key=lambda item: (item[0][0], -len(item[1]), item[0][1], item[0][2]),
+    ):
+        match = match_by_id.get(match_id)
+        rows.append(
+            {
+                "match_id": match_id,
+                "match_name": match_name(match, match_id),
+                "team": team,
+                "player_name": player_name,
+                "pick_count": str(len(participants)),
+                "participants": ", ".join(sorted(participants)),
+                "updated_at": now_iso,
+            }
+        )
+    return rows
+
+
+def build_first_score_belief_rows(
+    predictions: list[LatestPrediction],
+    match_by_id: dict[str, Match],
+    participant_by_id: dict[str, Participant],
+    now_iso: str,
+) -> list[dict[str, str]]:
+    picks: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for prediction in predictions:
+        if not prediction.scores:
+            continue
+        first_score = normalize_score(prediction.scores[0])
+        match = match_by_id.get(prediction.match_id)
+        picks[(prediction.match_id, outcome_label(first_score, match), first_score)].add(
+            participant_display_name(prediction, participant_by_id)
+        )
+
+    rows: list[dict[str, str]] = []
+    for (match_id, outcome, first_score), participants in sorted(
+        picks.items(),
+        key=lambda item: (item[0][0], -len(item[1]), item[0][1], item[0][2]),
+    ):
+        match = match_by_id.get(match_id)
+        rows.append(
+            {
+                "match_id": match_id,
+                "match_name": match_name(match, match_id),
+                "outcome": outcome,
+                "first_score": first_score,
+                "pick_count": str(len(participants)),
+                "participants": ", ".join(sorted(participants)),
+                "updated_at": now_iso,
+            }
+        )
+    return rows
+
+
+def participant_display_name(
+    prediction: LatestPrediction,
+    participant_by_id: dict[str, Participant],
+) -> str:
+    participant = participant_by_id.get(prediction.participant_id)
+    return participant.display_name if participant else prediction.display_name or prediction.participant_id
+
+
+def match_name(match: Match | None, fallback_match_id: str) -> str:
+    if not match:
+        return fallback_match_id
+    return f"{match.team1} - {match.team2}"
+
+
+def outcome_label(score: str, match: Match | None) -> str:
+    try:
+        left, right = [int(part) for part in score.split("-", 1)]
+    except ValueError:
+        return "unknown"
+    if left == right:
+        return "draw"
+    if not match:
+        return "team1_win" if left > right else "team2_win"
+    return f"{match.team1} win" if left > right else f"{match.team2} win"
 
 
 def normalize_score(score: str) -> str:

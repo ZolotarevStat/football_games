@@ -74,6 +74,10 @@ class PredictionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def replace_analytics_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def save_prediction(
         self,
         *,
