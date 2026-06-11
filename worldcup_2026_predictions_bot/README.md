@@ -83,6 +83,7 @@ Cloud Functions/webhook experiment files are archived under `legacy/cloud_functi
 - `/my` shows latest predictions.
 - `/help` shows rules.
 - `/rules` shows detailed rules.
+- `/scores MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1` updates only score variants for an existing prediction before deadline.
 - `/authors MATCH_ID | Автор1 | Автор2` updates only G+A authors for an existing prediction before deadline.
 
 ## Access Modes

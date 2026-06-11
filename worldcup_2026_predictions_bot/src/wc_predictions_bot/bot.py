@@ -84,7 +84,7 @@ class PredictionBot:
             return
 
         if not is_private and command not in self._group_commands():
-            if command in {"/start", "/predict", "/submit", "/authors", "/my", "/cancel"}:
+            if command in {"/start", "/predict", "/submit", "/authors", "/scores", "/my", "/cancel"}:
                 self._send_private_chat_notice(chat_id)
             return
 
@@ -135,6 +135,9 @@ class PredictionBot:
         if state and state.step == "scores":
             self._handle_scores_text(chat_id, telegram_id, text, state.draft)
             return
+        if state and state.step == "edit_scores":
+            self._handle_edit_scores_text(chat_id, telegram_id, text, state.draft)
+            return
 
         if command in {"/predict", "Сделать"} or text == "Сделать прогноз":
             if not is_private:
@@ -151,6 +154,11 @@ class PredictionBot:
                 self._send_private_chat_notice(chat_id)
                 return
             self._handle_authors_command(chat_id, telegram_id, participant, arg.strip(), update_id)
+        elif command == "/scores":
+            if not is_private:
+                self._send_private_chat_notice(chat_id)
+                return
+            self._handle_scores_command(chat_id, telegram_id, participant, arg.strip(), update_id)
         elif command == "/my" or text == "Мои прогнозы":
             if not is_private:
                 self._send_private_chat_notice(chat_id)
@@ -172,7 +180,7 @@ class PredictionBot:
             self._send_dashboard(
                 chat_id,
                 participant,
-                "Команда не распознана. Используйте /matches, /predict, /my, /authors или /help.\n\n"
+                "Команда не распознана. Используйте /matches, /predict, /my, /scores, /authors или /help.\n\n"
                 "Выберите действие:",
             )
 
@@ -237,6 +245,9 @@ class PredictionBot:
         elif data.startswith("save:"):
             self._delete_message_safely(chat_id, message_id)
             self._confirm_save(chat_id, telegram_id, participant, update_id, data[5:])
+        elif data.startswith("edit_scores:"):
+            self._delete_message_safely(chat_id, message_id)
+            self._edit_draft_scores(chat_id, telegram_id, data.split(":", 1)[1])
         elif data == "cancel":
             self._delete_message_safely(chat_id, message_id)
             self.drafts.clear(telegram_id)
@@ -363,7 +374,7 @@ class PredictionBot:
         submitted_match_ids = self._submitted_match_ids(participant) if participant else set()
         lines = [
             "🗓 Ближайшие открытые матчи:",
-            "Используйте MATCH_ID в /submit или /authors.",
+            "Используйте MATCH_ID в /submit, /scores или /authors.",
             "",
         ]
         for match in matches:
@@ -462,6 +473,15 @@ class PredictionBot:
         self.drafts.set(telegram_id, "author1", draft)
         self._send_author_buttons(chat_id, draft, first_team=True)
 
+    def _handle_edit_scores_text(self, chat_id: int, telegram_id: str, text: str, draft: PredictionDraft) -> None:
+        try:
+            draft.scores = parse_scores(text)
+        except ValidationError as error:
+            self.telegram.send_message(chat_id, str(error))
+            return
+        self.drafts.set(telegram_id, "confirm", draft)
+        self._send_confirmation(chat_id, draft)
+
     def _send_author_buttons(self, chat_id: int, draft: PredictionDraft, first_team: bool, full_list: bool = False) -> None:
         match = self._require_match(draft.match_id)
         team = match.team1 if first_team else match.team2
@@ -539,9 +559,30 @@ class PredictionBot:
         keyboard = {"inline_keyboard": [[
             {"text": "Сохранить", "callback_data": f"save:{match.match_id}"},
         ], [
-            {"text": BACK_BUTTON_TEXT, "callback_data": "cancel"},
+            {"text": "✏️ Изменить счета", "callback_data": f"edit_scores:{match.match_id}"},
+        ], [
+            {"text": "Отмена", "callback_data": "cancel"},
         ]]}
         self.telegram.send_message(chat_id, text, keyboard)
+
+    def _edit_draft_scores(self, chat_id: int, telegram_id: str, match_id: str) -> None:
+        state = self.drafts.get(telegram_id)
+        if not state or state.draft.match_id != match_id:
+            self.telegram.send_message(chat_id, "Черновик не найден. Начните заново через /predict.")
+            return
+        match = self._require_match(match_id)
+        try:
+            ensure_open_deadline(match, self._now())
+        except ValidationError as error:
+            self.telegram.send_message(chat_id, str(error))
+            return
+        self.drafts.set(telegram_id, "edit_scores", state.draft)
+        self.telegram.send_message(
+            chat_id,
+            f"Введите новые 7 счетов для матча {match.team1} - {match.team2} через запятую.\n"
+            "Авторы останутся прежними.\n"
+            "Пример: 1-0,1-1,2-0,0-0,2-1,1-2,0-1",
+        )
 
     def _confirm_save(
         self,
@@ -743,6 +784,56 @@ class PredictionBot:
             "Выберите следующее действие:",
         )
 
+    def _handle_scores_command(
+        self,
+        chat_id: int,
+        telegram_id: str,
+        participant: Participant,
+        arg: str,
+        update_id: str,
+    ) -> None:
+        match_id, _, scores_text = arg.partition(" ")
+        if not match_id or not scores_text.strip():
+            self.telegram.send_message(chat_id, "Формат: /scores MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1")
+            return
+
+        match = self.repository.get_match(match_id.strip())
+        if not match:
+            self.telegram.send_message(chat_id, "Матч не найден. Используйте /matches, чтобы увидеть MATCH_ID.")
+            return
+
+        latest = self.repository.get_latest_for_participant(participant.participant_id)
+        prediction = next((item for item in latest if item.match_id == match.match_id), None)
+        if not prediction:
+            self.telegram.send_message(chat_id, "Для этого матча еще нет прогноза. Сначала сохраните его через /predict или /submit.")
+            return
+
+        try:
+            scores = parse_scores(scores_text)
+            ensure_open_deadline(match, self._now())
+        except ValidationError as error:
+            self.telegram.send_message(chat_id, str(error))
+            return
+
+        submission_id = self.repository.save_prediction(
+            timestamp_msk=self._now_iso(),
+            telegram_id=telegram_id,
+            participant_id=participant.participant_id,
+            match_id=match.match_id,
+            scores=scores,
+            author_team1=prediction.author_team1,
+            author_team2=prediction.author_team2,
+            source_update_id=str(update_id),
+        )
+        self.drafts.clear(telegram_id)
+        self._send_dashboard(
+            chat_id,
+            participant,
+            f"Счета обновлены. ID: {submission_id[:8]}\n"
+            f"{match.team1} - {match.team2}: {', '.join(scores)}; {prediction.author_team1}, {prediction.author_team2}\n\n"
+            "Выберите следующее действие:",
+        )
+
     def _parse_authors_arg(self, arg: str) -> tuple[str, str, str]:
         parts = [part.strip() for part in arg.split("|")]
         if len(parts) == 3 and all(parts):
@@ -910,6 +1001,7 @@ class PredictionBot:
             "📝 /predict - сделать или изменить прогноз\n"
             "🔒 /my - мои прогнозы\n"
             "⚡ /submit MATCH_ID ... - быстрое сохранение\n"
+            "✏️ /scores MATCH_ID 1-0,... - заменить только счета\n"
             "🧩 /authors MATCH_ID | Автор1 | Автор2 - заменить только авторов\n"
             "📘 /rules - подробные правила\n"
             "↩️ /cancel - сбросить черновик",
@@ -925,6 +1017,7 @@ class PredictionBot:
             "⚽ Выберите по одному автору Г+П из активной заявки каждой команды.\n"
             "♻️ Игрока нельзя использовать повторно в актуальных прогнозах.\n"
             "✏️ Повторный /submit по тому же MATCH_ID перезаписывает прогноз.\n"
+            "🔢 /scores меняет только счета и оставляет авторов без изменений.\n"
             "🧩 /authors меняет только авторов и оставляет счета без изменений.\n"
             "⏰ После дедлайна новые прогнозы и правки блокируются сервером.\n"
             "🏆 С 1/8 финала очки за счета и Г+П постепенно растут.\n"
@@ -1093,6 +1186,7 @@ class PredictionBot:
             "/predict",
             "/submit",
             "/authors",
+            "/scores",
             "/my",
             "/help",
             "/rules",
@@ -1108,7 +1202,7 @@ class PredictionBot:
         self.telegram.send_message(
             chat_id,
             "Прогнозы принимаются только в личке боту, чтобы участники не видели ставки друг друга. "
-            "Откройте @tii_wc_predictions_2026_bot и отправьте /predict или /submit там.",
+            "Откройте @tii_wc_predictions_2026_bot и отправьте /predict, /submit, /scores или /authors там.",
         )
 
     def _delete_message_safely(self, chat_id: int | str | None, message_id: int | str | None) -> None:

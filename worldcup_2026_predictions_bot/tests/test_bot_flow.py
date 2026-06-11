@@ -401,6 +401,56 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("- Альварес", tg.messages[-1][1])
         self.assertIn("/authors", tg.messages[-1][1])
 
+    def test_scores_command_updates_only_scores(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/scores m1 2-0,1-0,1-1,0-0,2-1,1-2,0-1"))
+
+        self.assertEqual(len(repo.raw_rows), 1)
+        self.assertEqual(repo.latest[0].scores, ("2-0", "1-0", "1-1", "0-0", "2-1", "1-2", "0-1"))
+        self.assertEqual(repo.latest[0].author_team1, "Месси")
+        self.assertEqual(repo.latest[0].author_team2, "Мбаппе")
+        self.assertIn("Счета обновлены", tg.messages[-1][1])
+
+    def test_scores_command_requires_existing_prediction(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/scores m1 2-0,1-0,1-1,0-0,2-1,1-2,0-1"))
+
+        self.assertEqual(len(repo.raw_rows), 0)
+        self.assertIn("еще нет прогноза", tg.messages[-1][1])
+
+    def test_confirmation_can_edit_scores_without_reselecting_authors(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+        bot.handle_update(callback_update("m:m1"))
+        bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("a1:m1:0"))
+        bot.handle_update(callback_update("a2:m1:0"))
+        bot.handle_update(callback_update("edit_scores:m1"))
+        bot.handle_update(message_update("2-0,1-0,1-1,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("save:m1"))
+
+        self.assertEqual(repo.latest[0].scores, ("2-0", "1-0", "1-1", "0-0", "2-1", "1-2", "0-1"))
+        self.assertEqual(repo.latest[0].author_team1, "Месси")
+        self.assertEqual(repo.latest[0].author_team2, "Мбаппе")
+
     def test_submit_command_is_private_only(self) -> None:
         repo = FakeRepository()
         tg = RecordingTelegramApi()
