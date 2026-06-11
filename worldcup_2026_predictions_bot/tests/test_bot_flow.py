@@ -223,6 +223,15 @@ class BotFlowTest(unittest.TestCase):
                 author_team2="Гризманн",
             )
         )
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="other2",
+                scores=tuple(["1-0"] * 7),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
@@ -230,6 +239,9 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("Вы выбрали матч: Аргентина - Франция", tg.messages[-1][1])
         self.assertIn("Уже задействованы", tg.messages[-1][1])
         self.assertIn("Месси", tg.messages[-1][1])
+        self.assertIn("Гризманн", tg.messages[-1][1])
+        self.assertNotIn("Винисиус", tg.messages[-1][1])
+        self.assertNotIn("Ямаль", tg.messages[-1][1])
         bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
 
         keyboard = tg.messages[-1][2]["inline_keyboard"]

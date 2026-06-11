@@ -429,10 +429,7 @@ class PredictionBot:
             return
         draft = PredictionDraft(participant_id=participant.participant_id, telegram_id=telegram_id, match_id=match_id)
         self.drafts.set(telegram_id, "scores", draft)
-        used_names = self._used_author_names(
-            self.repository.get_latest_for_participant(participant.participant_id),
-            current_match_id=match.match_id,
-        )
+        used_names = self._used_author_names_for_match(participant.participant_id, match)
         lines = [
             f"Вы выбрали матч: {match.team1} - {match.team2}",
             f"Дедлайн: {match.deadline_msk:%d.%m %H:%M} МСК",
@@ -960,6 +957,20 @@ class PredictionBot:
 
     def _submitted_match_ids(self, participant: Participant) -> set[str]:
         return {prediction.match_id for prediction in self.repository.get_latest_for_participant(participant.participant_id)}
+
+    def _used_author_names_for_match(self, participant_id: str, match: Match) -> list[str]:
+        used_names = self._used_author_names(
+            self.repository.get_latest_for_participant(participant_id),
+            current_match_id=match.match_id,
+        )
+        if not used_names:
+            return []
+        match_player_names = {
+            player.display_name
+            for player in self.repository.get_players_for_match(match)
+            if player.team in {match.team1, match.team2}
+        }
+        return sorted(used_names & match_player_names)
 
     def _hidden_author_names_for_team(self, draft: PredictionDraft, match: Match, team: str) -> list[str]:
         used_names = self._used_author_names(
