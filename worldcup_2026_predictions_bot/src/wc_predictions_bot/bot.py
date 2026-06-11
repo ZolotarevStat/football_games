@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
+from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -120,11 +121,14 @@ class PredictionBot:
             return
 
         if not participant:
-            if not is_private:
+            if not is_private and command not in self._admin_commands():
                 self._send_private_chat_notice(chat_id)
                 return
-            self._bind(chat_id, text, telegram_id, username)
-            return
+            if not is_private:
+                pass
+            else:
+                self._bind(chat_id, text, telegram_id, username)
+                return
 
         if command == "/cancel":
             self.drafts.clear(telegram_id)
@@ -174,6 +178,8 @@ class PredictionBot:
             self._send_match_status(chat_id, participant, username, arg.strip())
         elif command == "/status_latest":
             self._send_latest_match_status(chat_id, participant, username)
+        elif command == "/insights":
+            self._send_match_insights(chat_id, participant, username, arg.strip())
         elif command == "/admin":
             self._send_admin_help(chat_id, participant, username)
         else:
@@ -1016,6 +1022,89 @@ class PredictionBot:
             return
         self._send_match_status(chat_id, participant, username, open_matches[0].match_id)
 
+    def _send_match_insights(self, chat_id: int, participant: Participant, username: str, match_id: str) -> None:
+        if not self._is_admin(participant, username):
+            self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
+            return
+        if not match_id:
+            self.telegram.send_message(chat_id, "Формат: /insights MATCH_ID")
+            return
+        match = self.repository.get_match(match_id)
+        if not match:
+            self.telegram.send_message(chat_id, "Матч не найден.")
+            return
+        predictions = self.repository.get_latest_for_match(match.match_id)
+        if not predictions:
+            self.telegram.send_message(chat_id, "По матчу нет прогнозов.")
+            return
+
+        total = len(predictions)
+        first_scores = Counter(prediction.scores[0] for prediction in predictions if prediction.scores)
+        team1_authors = Counter(prediction.author_team1 for prediction in predictions if prediction.author_team1)
+        team2_authors = Counter(prediction.author_team2 for prediction in predictions if prediction.author_team2)
+        outcomes = Counter(self._first_score_outcome(prediction.scores[0], match) for prediction in predictions if prediction.scores)
+
+        top_score, top_score_count = self._top_counter_item(first_scores)
+        top_team1_author, top_team1_count = self._top_counter_item(team1_authors)
+        top_team2_author, top_team2_count = self._top_counter_item(team2_authors)
+
+        lines = [
+            f"📊 Агрегаты прогнозов: {match.match_id}",
+            f"{match.team1} - {match.team2}",
+            f"Участников с прогнозом: {total}",
+            "",
+            f"Самый популярный 1-й счет: {top_score} ({self._share(top_score_count, total)}, {top_score_count}/{total})",
+            (
+                f"Самый популярный автор Г+П у {match.team1}: "
+                f"{top_team1_author} ({self._share(top_team1_count, total)}, {top_team1_count}/{total})"
+            ),
+            (
+                f"Самый популярный автор Г+П у {match.team2}: "
+                f"{top_team2_author} ({self._share(top_team2_count, total)}, {top_team2_count}/{total})"
+            ),
+            (
+                "Доли исходов по 1-м счетам: "
+                f"{match.team1} {self._share(outcomes.get('team1', 0), total)} / "
+                f"ничья {self._share(outcomes.get('draw', 0), total)} / "
+                f"{match.team2} {self._share(outcomes.get('team2', 0), total)}"
+            ),
+            "",
+            "Выбранные игроки",
+            f"{match.team1}:",
+        ]
+        lines.extend(self._format_counter_lines(team1_authors))
+        lines.append(f"{match.team2}:")
+        lines.extend(self._format_counter_lines(team2_authors))
+        self.telegram.send_message(chat_id, "\n".join(lines))
+
+    def _first_score_outcome(self, score: str, match: Match) -> str:
+        left, _, right = score.replace(":", "-").partition("-")
+        try:
+            team1_score = int(left)
+            team2_score = int(right)
+        except ValueError:
+            return "unknown"
+        if team1_score > team2_score:
+            return "team1"
+        if team2_score > team1_score:
+            return "team2"
+        return "draw"
+
+    def _top_counter_item(self, counter: Counter[str]) -> tuple[str, int]:
+        if not counter:
+            return "нет данных", 0
+        return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0]
+
+    def _share(self, count: int, total: int) -> str:
+        if total <= 0:
+            return "0%"
+        return f"{count * 100 / total:.0f}%"
+
+    def _format_counter_lines(self, counter: Counter[str]) -> list[str]:
+        if not counter:
+            return ["- нет данных"]
+        return [f"- {name} — {count}" for name, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))]
+
     def _forecast_participants(self) -> list[Participant]:
         return [
             participant
@@ -1066,6 +1155,7 @@ class PredictionBot:
             "🛠 Админские команды\n"
             "📋 /status MATCH_ID — кто сдал прогноз по матчу\n"
             "📋 /status_latest — кто сдал прогноз по ближайшему открытому матчу\n"
+            "📊 /insights MATCH_ID — агрегаты прогнозов по матчу\n"
             "🔒 /publish MATCH_ID — опубликовать прогнозы после дедлайна\n"
             "🧮 /score MATCH_ID — пересчитать очки по матчу\n"
             "🧮 /score all — пересчитать очки по всем заполненным результатам\n"
@@ -1194,9 +1284,11 @@ class PredictionBot:
         lines.append("Сделать или изменить прогноз: /predict")
         return "\n".join(lines)
 
-    def _is_admin(self, participant: Participant, username: str) -> bool:
-        role_admin = participant.role.lower() == "admin" or participant.status.lower() == "admin"
+    def _is_admin(self, participant: Participant | None, username: str) -> bool:
         username_admin = username.strip().lstrip("@").lower() in self.config.admin_usernames
+        if not participant:
+            return username_admin
+        role_admin = participant.role.lower() == "admin" or participant.status.lower() == "admin"
         stored_username_admin = participant.telegram_username.strip().lstrip("@").lower() in self.config.admin_usernames
         return role_admin or username_admin or stored_username_admin
 
@@ -1224,6 +1316,18 @@ class PredictionBot:
             "/score",
             "/status",
             "/status_latest",
+            "/insights",
+            "/admin",
+        }
+
+    def _admin_commands(self) -> set[str]:
+        return {
+            "/publish",
+            "/leaderboard",
+            "/score",
+            "/status",
+            "/status_latest",
+            "/insights",
             "/admin",
         }
 

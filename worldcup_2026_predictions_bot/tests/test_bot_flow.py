@@ -16,12 +16,14 @@ def make_config(
     open_registration_enabled: bool = False,
     allowed_usernames: frozenset[str] = frozenset(),
     tournament_chat_id: str = "",
+    admin_usernames: frozenset[str] = frozenset(),
 ) -> Config:
     return replace(
         Config.from_env(),
         open_registration_enabled=open_registration_enabled,
         allowed_usernames=allowed_usernames,
         tournament_chat_id=tournament_chat_id,
+        admin_usernames=admin_usernames,
     )
 
 
@@ -636,6 +638,77 @@ class BotFlowTest(unittest.TestCase):
 
         self.assertIn("только организаторам", tg.messages[-1][1])
 
+    def test_admin_insights_shows_match_prediction_aggregates(self) -> None:
+        repo = FakeRepository()
+        repo.latest.extend(
+            [
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="m1",
+                    scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Месси",
+                    author_team2="Мбаппе",
+                ),
+                LatestPrediction(
+                    participant_id="p2",
+                    match_id="m1",
+                    scores=("1-0", "2-1", "0-0", "1-1", "2-0", "1-2", "0-1"),
+                    author_team1="Месси",
+                    author_team2="Гризманн",
+                ),
+                LatestPrediction(
+                    participant_id="admin",
+                    match_id="m1",
+                    scores=("1-1", "1-0", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Альварес",
+                    author_team2="Мбаппе",
+                ),
+            ]
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/insights m1", telegram_id=101, username="organizer_username"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Агрегаты прогнозов: m1", text)
+        self.assertIn("Участников с прогнозом: 3", text)
+        self.assertIn("Самый популярный 1-й счет: 1-0 (67%, 2/3)", text)
+        self.assertIn("Самый популярный автор Г+П у Аргентина: Месси (67%, 2/3)", text)
+        self.assertIn("Самый популярный автор Г+П у Франция: Мбаппе (67%, 2/3)", text)
+        self.assertIn("Доли исходов по 1-м счетам: Аргентина 67% / ничья 33% / Франция 0%", text)
+        self.assertIn("- Месси — 2", text)
+        self.assertIn("- Альварес — 1", text)
+        self.assertIn("- Мбаппе — 2", text)
+        self.assertIn("- Гризманн — 1", text)
+
+    def test_admin_insights_is_admin_only(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/insights m1", telegram_id=100, username="user"))
+
+        self.assertIn("только организаторам", tg.messages[-1][1])
+
+    def test_admin_insights_allows_configured_username_without_bound_participant(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(admin_usernames=frozenset({"group_admin"})), repo, tg)
+
+        bot.handle_update(message_update("/insights m1", telegram_id=999, username="group_admin", chat_type="supergroup"))
+
+        self.assertIn("Агрегаты прогнозов: m1", tg.messages[-1][1])
+
     def test_admin_command_shows_admin_reference_only_to_admins(self) -> None:
         repo = FakeRepository()
         tg = RecordingTelegramApi()
@@ -648,6 +721,7 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("Админские команды", tg.messages[-1][1])
         self.assertIn("/status MATCH_ID", tg.messages[-1][1])
         self.assertIn("/status_latest", tg.messages[-1][1])
+        self.assertIn("/insights MATCH_ID", tg.messages[-1][1])
 
     def test_group_plain_text_is_ignored(self) -> None:
         repo = FakeRepository()

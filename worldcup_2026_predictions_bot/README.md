@@ -97,6 +97,7 @@ Admin:
 
 - `/publish MATCH_ID` publishes closed predictions to `TOURNAMENT_CHAT_ID` after deadline and marks latest rows locked.
 - `/status MATCH_ID` shows submitted/missing participants for a match.
+- `/insights MATCH_ID` shows aggregate picks for a match: most popular first score, outcome shares, top G+A authors by team, and all selected players grouped by team.
 - `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
 - `/score` updates `scoring`, `leaderboard`, metric leaderboards, author-pick analytics, and first-score belief analytics.
 - `/leaderboard` publishes `leaderboard` sheet if it is filled.
