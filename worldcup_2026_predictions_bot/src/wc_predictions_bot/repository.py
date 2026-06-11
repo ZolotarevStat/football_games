@@ -30,6 +30,10 @@ class PredictionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_matches(self) -> list[Match]:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_match(self, match_id: str) -> Match | None:
         raise NotImplementedError
 
@@ -51,6 +55,10 @@ class PredictionRepository(ABC):
 
     @abstractmethod
     def get_participants(self) -> list[Participant]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_participants_with_predictions(self) -> list[Participant]:
         raise NotImplementedError
 
     @abstractmethod
@@ -86,4 +94,20 @@ class PredictionRepository(ABC):
 
     @abstractmethod
     def get_leaderboard_rows(self) -> list[dict[str, str]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def notification_was_sent(self, notification_key: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def record_notification(
+        self,
+        *,
+        notification_key: str,
+        notification_type: str,
+        sent_at_msk: str,
+        recipient_count: int,
+        details: str,
+    ) -> None:
         raise NotImplementedError

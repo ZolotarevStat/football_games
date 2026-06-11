@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from wc_predictions_bot.models import LatestPrediction, MatchResult, Participant
+from wc_predictions_bot.models import LatestPrediction, Match, MatchResult, Participant
 from wc_predictions_bot.scoring import calculate_scoring, format_leaderboard
 
 
@@ -90,6 +92,90 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(result.scoring_rows, [])
         self.assertEqual(result.leaderboard_rows, [])
         self.assertEqual(result.match_ids, ())
+
+    def test_playoff_stage_points_increase_from_round16(self) -> None:
+        result = calculate_scoring(
+            predictions=[
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="m1",
+                    scores=("2-1", "1-1", "1-0", "0-0", "2-0", "1-2", "0-1"),
+                    author_team1="Месси",
+                    author_team2="Мбаппе",
+                )
+            ],
+            results=[
+                MatchResult(
+                    match_id="m1",
+                    actual_score="2-1",
+                    goals=("Месси",),
+                    assists=("Мбаппе",),
+                )
+            ],
+            participants=[Participant(participant_id="p1", display_name="Игрок 1")],
+            matches=[
+                Match(
+                    match_id="m1",
+                    group="",
+                    tour="1/8",
+                    kickoff_msk=datetime(2026, 7, 1, 20, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+                    deadline_msk=datetime(2026, 7, 1, 19, 55, tzinfo=ZoneInfo("Europe/Moscow")),
+                    team1="Аргентина",
+                    team2="Франция",
+                )
+            ],
+            now_iso="2026-07-01T23:00:00+03:00",
+        )
+
+        self.assertEqual(result.scoring_rows[0]["stage"], "round16")
+        self.assertEqual(result.scoring_rows[0]["score_points"], "19")
+        self.assertEqual(result.scoring_rows[0]["author_points"], "9")
+
+    def test_leaderboard_tie_breaks_by_later_stage_points(self) -> None:
+        result = calculate_scoring(
+            predictions=[
+                LatestPrediction("p1", "final", ("0-0", "1-0", "2-0", "2-1", "1-2", "0-1", "3-0"), "", ""),
+                LatestPrediction("p1", "group", ("0-0", "1-1", "2-0", "2-1", "1-2", "0-1", "3-0"), "", ""),
+                LatestPrediction("p2", "final", ("0-0", "1-1", "2-0", "1-0", "2-1", "1-2", "0-1"), "", ""),
+                LatestPrediction("p2", "group", ("0-0", "1-1", "2-0", "2-1", "1-2", "1-0", "0-1"), "", ""),
+            ],
+            results=[
+                MatchResult(match_id="final", actual_score="1-0"),
+                MatchResult(match_id="group", actual_score="1-0"),
+            ],
+            participants=[
+                Participant(participant_id="p1", display_name="Игрок 1"),
+                Participant(participant_id="p2", display_name="Игрок 2"),
+            ],
+            matches=[
+                Match(
+                    match_id="final",
+                    group="",
+                    tour="Финал",
+                    kickoff_msk=datetime(2026, 7, 19, 20, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+                    deadline_msk=datetime(2026, 7, 19, 19, 55, tzinfo=ZoneInfo("Europe/Moscow")),
+                    team1="A",
+                    team2="B",
+                ),
+                Match(
+                    match_id="group",
+                    group="",
+                    tour="Группа",
+                    kickoff_msk=datetime(2026, 6, 15, 20, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+                    deadline_msk=datetime(2026, 6, 15, 19, 55, tzinfo=ZoneInfo("Europe/Moscow")),
+                    team1="C",
+                    team2="D",
+                ),
+            ],
+            now_iso="2026-07-20T12:00:00+03:00",
+        )
+
+        self.assertEqual(result.leaderboard_rows[0]["display_name"], "Игрок 1")
+        self.assertEqual(result.leaderboard_rows[0]["total_points"], result.leaderboard_rows[1]["total_points"])
+        self.assertGreater(
+            int(result.leaderboard_rows[0]["final_points"]),
+            int(result.leaderboard_rows[1]["final_points"]),
+        )
 
 
 if __name__ == "__main__":

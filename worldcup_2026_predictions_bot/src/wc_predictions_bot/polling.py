@@ -76,6 +76,7 @@ def main() -> None:
     LOG.info("Polling started. trust_env_proxy=%s Press Ctrl+C to stop.", args.trust_env_proxy)
     while True:
         try:
+            bot.maybe_send_daily_match_notifications()
             data = telegram_get(
                 token,
                 "getUpdates",

@@ -71,6 +71,7 @@ class FakeRepository(PredictionRepository):
         self.leaderboard_rows: list[dict[str, str]] = []
         self.raw_rows: list[dict[str, str]] = []
         self.locked_matches: list[str] = []
+        self.notifications: list[dict[str, str]] = []
 
     def get_participant_by_telegram_id(self, telegram_id: str) -> Participant | None:
         return next((p for p in self.participants.values() if p.telegram_id == telegram_id), None)
@@ -123,6 +124,9 @@ class FakeRepository(PredictionRepository):
             if match.status == "open" and now < match.deadline_msk
         ]
 
+    def get_matches(self) -> list[Match]:
+        return list(self.matches.values())
+
     def get_match(self, match_id: str) -> Match | None:
         return self.matches.get(match_id)
 
@@ -143,6 +147,14 @@ class FakeRepository(PredictionRepository):
 
     def get_participants(self) -> list[Participant]:
         return list(self.participants.values())
+
+    def get_participants_with_predictions(self) -> list[Participant]:
+        participant_ids = {prediction.participant_id for prediction in self.latest}
+        return [
+            participant
+            for participant in self.participants.values()
+            if participant.participant_id in participant_ids and participant.telegram_id
+        ]
 
     def get_results(self) -> list[MatchResult]:
         return list(self.results)
@@ -186,6 +198,8 @@ class FakeRepository(PredictionRepository):
                 scores=tuple(scores),
                 author_team1=author_team1,
                 author_team2=author_team2,
+                display_name=self.participants.get(participant_id, Participant(participant_id, participant_id)).display_name,
+                match_name=self._match_name(match_id),
                 submitted_at_msk=timestamp_msk,
             )
         )
@@ -200,6 +214,8 @@ class FakeRepository(PredictionRepository):
                 scores=p.scores,
                 author_team1=p.author_team1,
                 author_team2=p.author_team2,
+                display_name=p.display_name,
+                match_name=p.match_name,
                 submitted_at_msk=p.submitted_at_msk,
                 is_locked=True if p.match_id == match_id else p.is_locked,
             )
@@ -210,3 +226,31 @@ class FakeRepository(PredictionRepository):
         if self.leaderboard_rows:
             return self.leaderboard_rows
         return [{"rank": "1", "participant_id": "p1", "display_name": "Тестовый участник", "total_points": "12"}]
+
+    def notification_was_sent(self, notification_key: str) -> bool:
+        return any(row.get("notification_key") == notification_key for row in self.notifications)
+
+    def record_notification(
+        self,
+        *,
+        notification_key: str,
+        notification_type: str,
+        sent_at_msk: str,
+        recipient_count: int,
+        details: str,
+    ) -> None:
+        self.notifications.append(
+            {
+                "notification_key": notification_key,
+                "notification_type": notification_type,
+                "sent_at_msk": sent_at_msk,
+                "recipient_count": str(recipient_count),
+                "details": details,
+            }
+        )
+
+    def _match_name(self, match_id: str) -> str:
+        match = self.matches.get(match_id)
+        if not match:
+            return ""
+        return f"{match.team1} - {match.team2}"

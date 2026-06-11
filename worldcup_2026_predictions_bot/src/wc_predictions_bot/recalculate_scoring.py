@@ -20,6 +20,7 @@ def main() -> None:
         predictions=bot.repository.get_all_latest_predictions(),
         results=bot.repository.get_results(),
         participants=bot.repository.get_participants(),
+        matches=bot.repository.get_matches(),
         now_iso=bot._now_iso(),
         match_id=match_id,
     )

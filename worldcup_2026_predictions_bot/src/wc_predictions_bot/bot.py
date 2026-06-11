@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .config import Config
@@ -24,6 +24,8 @@ from .validators import (
 
 LOG = logging.getLogger(__name__)
 AUTHOR_PREVIEW_LIMIT = 5
+DEFAULT_MATCH_LIMIT = 5
+MATCH_DAY_LIMIT = 3
 
 
 class PredictionBot:
@@ -203,6 +205,9 @@ class PredictionBot:
             _, prefix, match_id = data.split(":", 2)
             self._delete_message_safely(chat_id, message_id)
             self._send_full_author_buttons(chat_id, telegram_id, match_id, first_team=prefix == "a1")
+        elif data.startswith("tour:"):
+            self._delete_message_safely(chat_id, message_id)
+            self._send_tour_matches(chat_id, data[5:])
         elif data.startswith("save:"):
             self._delete_message_safely(chat_id, message_id)
             self._confirm_save(chat_id, telegram_id, update_id, data[5:])
@@ -270,7 +275,8 @@ class PredictionBot:
         return f"Участник {user.get('id', '')}"
 
     def _send_open_matches(self, chat_id: int) -> None:
-        matches = self._visible_open_matches(self.repository.get_open_matches(self._now_iso()))
+        all_open_matches = self.repository.get_open_matches(self._now_iso())
+        matches = self._visible_open_matches(all_open_matches)
         if not matches:
             self.telegram.send_message(chat_id, "Открытых матчей сейчас нет.")
             return
@@ -278,6 +284,10 @@ class PredictionBot:
             [{"text": self._match_button(match), "callback_data": f"m:{match.match_id}"}]
             for match in matches
         ]
+        closest_tour_matches = self._closest_tour_matches(all_open_matches)
+        visible_ids = {match.match_id for match in matches}
+        if any(match.match_id not in visible_ids for match in closest_tour_matches):
+            rows.append([{"text": "Все матчи ближайшего тура", "callback_data": f"tour:{closest_tour_matches[0].tour}"}])
         self.telegram.send_message(chat_id, "Выберите матч:", {"inline_keyboard": rows})
         lines = ["Прогнозы отправляются в личке боту. Быстрое сохранение одной командой:"]
         lines.append("/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2")
@@ -307,17 +317,45 @@ class PredictionBot:
         if not matches:
             return []
         sorted_matches = sorted(matches, key=lambda match: match.kickoff_msk)
-        now = self._now()
-        current_window_end = now + timedelta(days=3)
-        current_window_matches = [
-            match for match in sorted_matches if now <= match.kickoff_msk < current_window_end
-        ]
-        if current_window_matches:
-            return current_window_matches
+        match_days: list[date] = []
+        for match in sorted_matches:
+            day = match.kickoff_msk.date()
+            if day not in match_days:
+                match_days.append(day)
+            if len(match_days) >= MATCH_DAY_LIMIT:
+                break
+        selected_ids = {
+            match.match_id
+            for match in sorted_matches[:DEFAULT_MATCH_LIMIT]
+        }
+        selected_ids.update(
+            match.match_id
+            for match in sorted_matches
+            if match.kickoff_msk.date() in set(match_days)
+        )
+        return [match for match in sorted_matches if match.match_id in selected_ids]
 
-        first_kickoff = sorted_matches[0].kickoff_msk
-        fallback_window_end = first_kickoff + timedelta(days=3)
-        return [match for match in sorted_matches if match.kickoff_msk < fallback_window_end]
+    def _closest_tour_matches(self, matches: list[Match]) -> list[Match]:
+        if not matches:
+            return []
+        sorted_matches = sorted(matches, key=lambda match: match.kickoff_msk)
+        closest_tour = sorted_matches[0].tour
+        return [match for match in sorted_matches if match.tour == closest_tour]
+
+    def _send_tour_matches(self, chat_id: int, tour: str) -> None:
+        matches = [
+            match
+            for match in sorted(self.repository.get_open_matches(self._now_iso()), key=lambda item: item.kickoff_msk)
+            if match.tour == tour
+        ]
+        if not matches:
+            self.telegram.send_message(chat_id, "Открытых матчей ближайшего тура сейчас нет.")
+            return
+        rows = [
+            [{"text": self._match_button(match), "callback_data": f"m:{match.match_id}"}]
+            for match in matches
+        ]
+        self.telegram.send_message(chat_id, f"Все матчи ближайшего тура ({tour}):", {"inline_keyboard": rows})
 
     def _start_prediction_for_match(self, chat_id: int, telegram_id: str, participant: Participant, match_id: str) -> None:
         match = self.repository.get_match(match_id)
@@ -645,10 +683,19 @@ class PredictionBot:
         if not predictions:
             self.telegram.send_message(chat_id, "По матчу нет прогнозов.")
             return
-        lines = [f"Закрытые прогнозы: {match.team1} - {match.team2}"]
-        for prediction in predictions:
+        participants = {participant.participant_id: participant for participant in self.repository.get_participants()}
+        lines = [
+            f"🔒 Прогнозы закрыты: {match.team1} - {match.team2}",
+            f"Дедлайн: {match.deadline_msk:%d.%m %H:%M} МСК",
+        ]
+        for prediction in sorted(predictions, key=lambda item: participants.get(item.participant_id, Participant(item.participant_id, item.participant_id)).display_name):
+            participant_name = participants.get(
+                prediction.participant_id,
+                Participant(prediction.participant_id, prediction.display_name or prediction.participant_id),
+            ).display_name
             lines.append(
-                f"{prediction.participant_id}: {', '.join(prediction.scores)}; "
+                f"\n👤 {participant_name}\n"
+                f"Счета: {', '.join(prediction.scores)}\n"
                 f"{prediction.author_team1}, {prediction.author_team2}"
             )
         target_chat_id = self.config.tournament_chat_id or str(chat_id)
@@ -679,6 +726,7 @@ class PredictionBot:
             predictions=self.repository.get_all_latest_predictions(),
             results=self.repository.get_results(),
             participants=self.repository.get_participants(),
+            matches=self.repository.get_matches(),
             now_iso=self._now_iso(),
             match_id=match_id,
         )
@@ -763,7 +811,10 @@ class PredictionBot:
             "♻️ Игрока нельзя использовать повторно в актуальных прогнозах.\n"
             "✏️ Повторный /submit по тому же MATCH_ID перезаписывает прогноз.\n"
             "🧩 /authors меняет только авторов и оставляет счета без изменений.\n"
-            "⏰ После дедлайна новые прогнозы и правки блокируются сервером.\n\n"
+            "⏰ После дедлайна новые прогнозы и правки блокируются сервером.\n"
+            "🏆 С 1/8 финала очки за счета и Г+П постепенно растут.\n"
+            "📌 Источник голов и ассистов для подсчета: sports.ru.\n"
+            "⚖️ При равенстве очков tie-breakers: финал, матч за 3 место, 1/2, 1/4, 1/8, 1/16, группа.\n\n"
             "Пример:\n"
             "/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2",
         )
@@ -795,7 +846,63 @@ class PredictionBot:
         return match
 
     def _match_button(self, match: Match) -> str:
-        return f"{match.tour} {match.team1}-{match.team2} до {match.deadline_msk:%m.%d %H:%M}"
+        return f"{match.tour} {match.team1}-{match.team2} до {match.deadline_msk:%d.%m %H:%M}"
+
+    def maybe_send_daily_match_notifications(self, now: datetime | None = None) -> int:
+        current = now or self._now()
+        if current.hour != 12:
+            return 0
+        notification_key = f"daily_matches:{current.date().isoformat()}"
+        if self.repository.notification_was_sent(notification_key):
+            return 0
+
+        window_end = current + timedelta(hours=24)
+        matches = [
+            match
+            for match in sorted(self.repository.get_open_matches(current.isoformat(timespec="seconds")), key=lambda item: item.kickoff_msk)
+            if current <= match.kickoff_msk <= window_end
+        ]
+        if not matches:
+            self.repository.record_notification(
+                notification_key=notification_key,
+                notification_type="daily_matches",
+                sent_at_msk=current.isoformat(timespec="seconds"),
+                recipient_count=0,
+                details="no open matches in next 24h",
+            )
+            return 0
+
+        participants = self.repository.get_participants_with_predictions()
+        message = self._daily_match_notification_text(matches)
+        sent_count = 0
+        for participant in participants:
+            try:
+                self.telegram.send_message(participant.telegram_id, message)
+                sent_count += 1
+            except Exception:
+                LOG.exception("Failed to send daily notification to participant_id=%s", participant.participant_id)
+
+        self.repository.record_notification(
+            notification_key=notification_key,
+            notification_type="daily_matches",
+            sent_at_msk=current.isoformat(timespec="seconds"),
+            recipient_count=sent_count,
+            details=", ".join(match.match_id for match in matches),
+        )
+        return sent_count
+
+    def _daily_match_notification_text(self, matches: list[Match]) -> str:
+        lines = [
+            "🔔 Матчи ближайших 24 часов",
+            "Дедлайн: за 5 минут до начала матча.",
+            "",
+        ]
+        for match in matches:
+            lines.append(f"{match.match_id} — {match.team1} - {match.team2}")
+            lines.append(f"⏰ {match.deadline_msk:%d.%m %H:%M} МСК")
+        lines.append("")
+        lines.append("Сделать или изменить прогноз: /predict")
+        return "\n".join(lines)
 
     def _is_admin(self, participant: Participant, username: str) -> bool:
         role_admin = participant.role.lower() == "admin" or participant.status.lower() == "admin"

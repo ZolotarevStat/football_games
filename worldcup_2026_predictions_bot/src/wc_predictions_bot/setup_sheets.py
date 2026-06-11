@@ -4,6 +4,8 @@ import argparse
 import base64
 import json
 
+from .config import Config
+from .env_loader import load_dotenv
 from .sheet_schema import SCORING_RULE_ROWS, SHEET_HEADERS
 
 
@@ -24,13 +26,23 @@ def build_service(service_account_json_b64: str, service_account_file: str):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--spreadsheet-id", required=True)
+    parser.add_argument("--env-file", default="")
+    parser.add_argument("--spreadsheet-id", default="")
     parser.add_argument("--service-account-json-b64", default="")
     parser.add_argument("--service-account-file", default="")
     args = parser.parse_args()
 
-    service = build_service(args.service_account_json_b64, args.service_account_file)
-    spreadsheet = service.spreadsheets().get(spreadsheetId=args.spreadsheet_id).execute()
+    if args.env_file:
+        load_dotenv(args.env_file)
+    config = Config.from_env()
+    spreadsheet_id = args.spreadsheet_id or config.spreadsheet_id
+    service_account_json_b64 = args.service_account_json_b64 or config.service_account_json_b64
+    service_account_file = args.service_account_file or config.service_account_file
+    if not spreadsheet_id:
+        raise RuntimeError("Pass --spreadsheet-id or set GOOGLE_SPREADSHEET_ID.")
+
+    service = build_service(service_account_json_b64, service_account_file)
+    spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     existing = {sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])}
     requests = [
         {"addSheet": {"properties": {"title": sheet_name}}}
@@ -39,20 +51,20 @@ def main() -> None:
     ]
     if requests:
         service.spreadsheets().batchUpdate(
-            spreadsheetId=args.spreadsheet_id,
+            spreadsheetId=spreadsheet_id,
             body={"requests": requests},
         ).execute()
 
     values = service.spreadsheets().values()
     for sheet_name, headers in SHEET_HEADERS.items():
         values.update(
-            spreadsheetId=args.spreadsheet_id,
+            spreadsheetId=spreadsheet_id,
             range=f"{sheet_name}!A1",
             valueInputOption="USER_ENTERED",
             body={"values": [headers]},
         ).execute()
     values.update(
-        spreadsheetId=args.spreadsheet_id,
+        spreadsheetId=spreadsheet_id,
         range="scoring_rules!A2",
         valueInputOption="USER_ENTERED",
         body={"values": SCORING_RULE_ROWS},

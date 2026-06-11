@@ -4,12 +4,48 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 
-from .models import LatestPrediction, MatchResult, Participant
+from .models import LatestPrediction, Match, MatchResult, Participant
 
 SCORE_POINTS_BY_RANK = (12, 10, 8, 7, 6, 5, 4)
 GOAL_POINTS = 4
 ASSIST_POINTS = 2
 COUNTED_RESULT_STATUSES = {"", "final", "played", "finished"}
+STAGE_SCORE_POINTS_BY_RANK = {
+    "group": (12, 10, 8, 7, 6, 5, 4),
+    "round32": (15, 12, 10, 8, 7, 6, 5),
+    "round16": (19, 15, 12, 10, 8, 7, 6),
+    "quarterfinal": (21, 17, 14, 12, 10, 9, 8),
+    "third_place": (21, 17, 14, 12, 10, 9, 8),
+    "semifinal": (23, 19, 16, 14, 12, 11, 10),
+    "final": (25, 21, 18, 16, 14, 13, 12),
+}
+STAGE_GOAL_POINTS = {
+    "group": 4,
+    "round32": 4,
+    "round16": 6,
+    "quarterfinal": 8,
+    "third_place": 8,
+    "semifinal": 10,
+    "final": 12,
+}
+STAGE_ASSIST_POINTS = {
+    "group": 2,
+    "round32": 2,
+    "round16": 3,
+    "quarterfinal": 4,
+    "third_place": 4,
+    "semifinal": 5,
+    "final": 6,
+}
+TIEBREAKER_FIELDS = (
+    "final_points",
+    "third_place_points",
+    "semifinal_points",
+    "quarterfinal_points",
+    "round16_points",
+    "round32_points",
+    "group_points",
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +62,7 @@ def calculate_scoring(
     participants: list[Participant],
     now_iso: str,
     match_id: str = "",
+    matches: list[Match] | None = None,
 ) -> ScoringResult:
     result_by_match = {
         result.match_id: result
@@ -33,25 +70,34 @@ def calculate_scoring(
         if is_counted_result(result) and (not match_id or result.match_id == match_id)
     }
     participant_by_id = {participant.participant_id: participant for participant in participants}
+    match_by_id = {match.match_id: match for match in matches or []}
     scoring_rows: list[dict[str, str]] = []
     leaderboard: dict[str, dict[str, int]] = defaultdict(lambda: {
         "matches_scored": 0,
         "score_points": 0,
         "author_points": 0,
         "total_points": 0,
+        **{field: 0 for field in TIEBREAKER_FIELDS},
     })
 
     for prediction in predictions:
         result = result_by_match.get(prediction.match_id)
         if not result:
             continue
-        score_points, score_note = score_prediction(prediction, result)
-        author_points, author_note = author_prediction(prediction, result)
+        match = match_by_id.get(prediction.match_id)
+        stage = stage_key(match)
+        score_points, score_note = score_prediction(prediction, result, stage)
+        author_points, author_note = author_prediction(prediction, result, stage)
         total_points = score_points + author_points
+        participant = participant_by_id.get(prediction.participant_id)
+        match_name = f"{match.team1} - {match.team2}" if match else prediction.match_name
         scoring_rows.append(
             {
                 "participant_id": prediction.participant_id,
+                "display_name": participant.display_name if participant else prediction.display_name or prediction.participant_id,
                 "match_id": prediction.match_id,
+                "match_name": match_name or prediction.match_id,
+                "stage": stage,
                 "score_points": str(score_points),
                 "author_points": str(author_points),
                 "penalties": "0",
@@ -64,6 +110,7 @@ def calculate_scoring(
         totals["score_points"] += score_points
         totals["author_points"] += author_points
         totals["total_points"] += total_points
+        totals[f"{stage}_points"] += total_points
 
     leaderboard_rows = build_leaderboard_rows(leaderboard, participant_by_id, now_iso)
     return ScoringResult(
@@ -73,11 +120,12 @@ def calculate_scoring(
     )
 
 
-def score_prediction(prediction: LatestPrediction, result: MatchResult) -> tuple[int, str]:
+def score_prediction(prediction: LatestPrediction, result: MatchResult, stage: str = "group") -> tuple[int, str]:
     actual_score = normalize_score(result.actual_score)
+    score_points_by_rank = STAGE_SCORE_POINTS_BY_RANK.get(stage, SCORE_POINTS_BY_RANK)
     for index, score in enumerate(prediction.scores):
         if normalize_score(score) == actual_score:
-            points = SCORE_POINTS_BY_RANK[index]
+            points = score_points_by_rank[index]
             return points, f"точный счет #{index + 1}: +{points}"
     return 0, "точного счета нет"
 
@@ -86,17 +134,19 @@ def is_counted_result(result: MatchResult) -> bool:
     return bool(result.actual_score and result.status.strip().lower() in COUNTED_RESULT_STATUSES)
 
 
-def author_prediction(prediction: LatestPrediction, result: MatchResult) -> tuple[int, str]:
+def author_prediction(prediction: LatestPrediction, result: MatchResult, stage: str = "group") -> tuple[int, str]:
     goals = Counter(result.goals)
     assists = Counter(result.assists)
     own_goals = Counter(result.own_goals)
+    goal_points = STAGE_GOAL_POINTS.get(stage, GOAL_POINTS)
+    assist_points = STAGE_ASSIST_POINTS.get(stage, ASSIST_POINTS)
     points = 0
     notes: list[str] = []
 
     for author in [prediction.author_team1, prediction.author_team2]:
         author_goals = max(0, goals[author] - own_goals[author])
         author_assists = assists[author]
-        author_points = author_goals * GOAL_POINTS + author_assists * ASSIST_POINTS
+        author_points = author_goals * goal_points + author_assists * assist_points
         points += author_points
         if author_points:
             parts = []
@@ -118,7 +168,12 @@ def build_leaderboard_rows(
 ) -> list[dict[str, str]]:
     sorted_items = sorted(
         totals_by_participant.items(),
-        key=lambda item: (-item[1]["total_points"], -item[1]["score_points"], item[0]),
+        key=lambda item: (
+            -item[1]["total_points"],
+            *[-item[1][field] for field in TIEBREAKER_FIELDS],
+            -item[1]["score_points"],
+            item[0],
+        ),
     )
     rows: list[dict[str, str]] = []
     previous_points: int | None = None
@@ -138,6 +193,7 @@ def build_leaderboard_rows(
                 "author_points": str(totals["author_points"]),
                 "tour_points": str(totals["total_points"]),
                 "total_points": str(totals["total_points"]),
+                **{field: str(totals[field]) for field in TIEBREAKER_FIELDS},
                 "updated_at": now_iso,
             }
         )
@@ -167,6 +223,26 @@ def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таб�
 
 def normalize_score(score: str) -> str:
     return score.strip().replace(":", "-")
+
+
+def stage_key(match: Match | None) -> str:
+    if not match:
+        return "group"
+    value = f"{match.tour} {match.group}".strip().lower()
+    value = value.replace("финал", "final")
+    if "3" in value and ("мест" in value or "place" in value):
+        return "third_place"
+    if "final" in value and "semi" not in value and "полу" not in value and "1/2" not in value:
+        return "final"
+    if "1/2" in value or "semi" in value or "полу" in value:
+        return "semifinal"
+    if "1/4" in value or "quarter" in value or "четвер" in value:
+        return "quarterfinal"
+    if "1/8" in value or "round16" in value or "1-8" in value:
+        return "round16"
+    if "1/16" in value or "round32" in value or "1-16" in value:
+        return "round32"
+    return "group"
 
 
 def now_iso_seconds() -> str:

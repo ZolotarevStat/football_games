@@ -91,7 +91,7 @@ python -m wc_predictions_bot.set_webhook \
 
 - `/start` -> bind by invite/PIN.
 - `/matches` shows compact open match IDs.
-- `/predict` -> choose open match.
+- `/predict` -> choose open match. The default list is the union of 5 nearest matches and all matches from the 3 nearest match days; a button can open all matches from the nearest tour.
 - Enter 7 unique scores, comma-separated: `1-0,1-1,2-0,0-0,2-1,1-2,0-1`.
 - Choose one G+A author from team 1 active roster, sorted by G+A priority.
 - Choose one G+A author from team 2 active roster, sorted by G+A priority.
@@ -114,6 +114,7 @@ Admin:
 - `/status MATCH_ID` shows submitted/missing participants for a match.
 - `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
 - `/leaderboard` publishes `leaderboard` sheet if it is filled.
+- Daily notifications are sent at 12:00 MSK to users who have already submitted at least one prediction when there are open matches in the next 24 hours.
 
 ## Validation
 
@@ -130,6 +131,7 @@ Hard server-side checks:
 - selected author was not already used by the same participant in other latest predictions.
 - results with status `cancelled`, `technical`, or `void` are ignored in scoring;
 - own goals do not give author points.
+- scoring increases from 1/8 onward and leaderboard ties are sorted by later-stage points: final, third place, semifinal, quarterfinal, round16, round32, group.
 
 ## Smoke Tests
 
