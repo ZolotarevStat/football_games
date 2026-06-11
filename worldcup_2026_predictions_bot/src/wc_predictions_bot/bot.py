@@ -27,6 +27,7 @@ AUTHOR_PREVIEW_LIMIT = 5
 DEFAULT_MATCH_LIMIT = 5
 MATCH_DAY_LIMIT = 3
 BACK_BUTTON_TEXT = "↩️ Назад"
+CLOSE_BUTTON_TEXT = "✖️ Закрыть"
 
 
 class PredictionBot:
@@ -70,10 +71,12 @@ class PredictionBot:
         command = self._normalize_command(command)
 
         if command == "/help":
-            self._send_help(chat_id)
+            participant = self.repository.get_participant_by_telegram_id(telegram_id) if is_private else None
+            self._send_help(chat_id, participant)
             return
         if command == "/rules" or text == "Правила":
-            self._send_rules(chat_id)
+            participant = self.repository.get_participant_by_telegram_id(telegram_id) if is_private else None
+            self._send_rules(chat_id, participant)
             return
         if command == "/matches":
             participant = self.repository.get_participant_by_telegram_id(telegram_id) if is_private else None
@@ -137,7 +140,7 @@ class PredictionBot:
             if not is_private:
                 self._send_private_chat_notice(chat_id)
                 return
-            self._send_open_matches(chat_id)
+            self._send_open_matches(chat_id, participant)
         elif command == "/submit":
             if not is_private:
                 self._send_private_chat_notice(chat_id)
@@ -164,7 +167,12 @@ class PredictionBot:
         elif command == "/admin":
             self._send_admin_help(chat_id, participant, username)
         else:
-            self.telegram.send_message(chat_id, "Команда не распознана. Используйте /matches, /predict, /my, /authors или /help.")
+            self._send_dashboard(
+                chat_id,
+                participant,
+                "Команда не распознана. Используйте /matches, /predict, /my, /authors или /help.\n\n"
+                "Выберите действие:",
+            )
 
     def _handle_callback(self, callback: dict[str, Any], update_id: str) -> None:
         callback_id = callback.get("id", "")
@@ -180,8 +188,14 @@ class PredictionBot:
             self.telegram.answer_callback_query(callback_id)
         except Exception:
             LOG.warning("answerCallbackQuery failed; continuing callback handling")
+        if data == "close":
+            self._delete_message_safely(chat_id, message_id)
+            return
         if data == "back":
             self._delete_message_safely(chat_id, message_id)
+            participant = self.repository.get_participant_by_telegram_id(telegram_id) if self._is_private_message(message) else None
+            if participant:
+                self._send_dashboard(chat_id, participant)
             return
         participant = self.repository.get_participant_by_telegram_id(telegram_id)
         if not participant and self.config.open_registration_enabled and self._is_private_message(message):
@@ -255,19 +269,19 @@ class PredictionBot:
                     {"text": "🗓 Матчи", "callback_data": "dash:matches"},
                     {"text": "📘 Правила", "callback_data": "dash:rules"},
                 ],
-                [{"text": BACK_BUTTON_TEXT, "callback_data": "back"}],
+                [{"text": CLOSE_BUTTON_TEXT, "callback_data": "close"}],
             ]
         }
 
     def _handle_dashboard_action(self, chat_id: int, participant: Participant, action: str) -> None:
         if action == "predict":
-            self._send_open_matches(chat_id)
+            self._send_open_matches(chat_id, participant)
         elif action == "my":
             self._send_my_predictions(chat_id, participant)
         elif action == "matches":
             self._send_matches(chat_id, participant)
         elif action == "rules":
-            self._send_rules(chat_id)
+            self._send_rules(chat_id, participant)
         else:
             self._send_dashboard(chat_id, participant)
 
@@ -314,11 +328,14 @@ class PredictionBot:
             return f"@{username}"
         return f"Участник {user.get('id', '')}"
 
-    def _send_open_matches(self, chat_id: int) -> None:
+    def _send_open_matches(self, chat_id: int, participant: Participant | None = None) -> None:
         all_open_matches = self.repository.get_open_matches(self._now_iso())
         matches = self._visible_open_matches(all_open_matches)
         if not matches:
-            self.telegram.send_message(chat_id, "Открытых матчей сейчас нет.")
+            if participant:
+                self._send_dashboard(chat_id, participant, "Открытых матчей сейчас нет.\n\nВыберите действие:")
+            else:
+                self.telegram.send_message(chat_id, "Открытых матчей сейчас нет.")
             return
         rows = [
             [{"text": self._match_button(match), "callback_data": f"m:{match.match_id}"}]
@@ -353,7 +370,7 @@ class PredictionBot:
                 f"{marker}{match.match_id} — {match.team1} - {match.team2}\n"
                 f"дедлайн {match.deadline_msk:%d.%m %H:%M} МСК"
             )
-        self.telegram.send_message(chat_id, "\n".join(lines))
+        self.telegram.send_message(chat_id, "\n".join(lines), self._dashboard_keyboard() if participant else None)
 
     def _visible_open_matches(self, matches: list[Match]) -> list[Match]:
         if not matches:
@@ -742,13 +759,13 @@ class PredictionBot:
         latest = self.repository.get_latest_for_participant(participant.participant_id)
         LOG.info("Loaded latest predictions for /my count=%s", len(latest))
         if not latest:
-            self.telegram.send_message(chat_id, "Пока нет сохраненных прогнозов.")
+            self._send_dashboard(chat_id, participant, "Пока нет сохраненных прогнозов.\n\nВыберите действие:")
             return
         lines = ["🔒 Ваши актуальные прогнозы. Другие участники их не видят:"]
         for prediction in latest:
             lines.append("")
             lines.append(format_prediction_for_my(prediction, self.repository.get_match(prediction.match_id)))
-        self.telegram.send_message(chat_id, "\n".join(lines))
+        self.telegram.send_message(chat_id, "\n".join(lines), self._dashboard_keyboard())
 
     def _publish_locked(self, chat_id: int, participant: Participant, username: str, match_id: str) -> None:
         if not self._is_admin(participant, username):
@@ -874,7 +891,7 @@ class PredictionBot:
             if participant.status.strip().lower() == "active"
         ]
 
-    def _send_help(self, chat_id: int) -> None:
+    def _send_help(self, chat_id: int, participant: Participant | None = None) -> None:
         self.telegram.send_message(
             chat_id,
             "🎮 /matches - ближайшие матчи и MATCH_ID\n"
@@ -884,9 +901,10 @@ class PredictionBot:
             "🧩 /authors MATCH_ID | Автор1 | Автор2 - заменить только авторов\n"
             "📘 /rules - подробные правила\n"
             "↩️ /cancel - сбросить черновик",
+            self._dashboard_keyboard() if participant else None,
         )
 
-    def _send_rules(self, chat_id: int) -> None:
+    def _send_rules(self, chat_id: int, participant: Participant | None = None) -> None:
         self.telegram.send_message(
             chat_id,
             "📘 Правила прогноза\n"
@@ -902,6 +920,7 @@ class PredictionBot:
             "⚖️ При равенстве очков tie-breakers: финал, матч за 3 место, 1/2, 1/4, 1/8, 1/16, группа.\n\n"
             "Пример:\n"
             "/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2",
+            self._dashboard_keyboard() if participant else None,
         )
 
     def _send_admin_help(self, chat_id: int, participant: Participant, username: str) -> None:

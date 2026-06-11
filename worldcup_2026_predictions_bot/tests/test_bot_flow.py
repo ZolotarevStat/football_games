@@ -175,6 +175,8 @@ class BotFlowTest(unittest.TestCase):
         bot.handle_update(message_update("/matches"))
 
         self.assertIn("✅ m1 — Аргентина - Франция", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("📝 Сделать прогноз", button_names)
 
     def test_predict_message_is_single_deletable_block(self) -> None:
         repo = FakeRepository()
@@ -184,9 +186,21 @@ class BotFlowTest(unittest.TestCase):
         bot.handle_update(message_update("/predict"))
         bot.handle_update(callback_update("back", update_id=2))
 
-        self.assertEqual(len(tg.messages), 1)
+        self.assertEqual(len(tg.messages), 2)
         self.assertIn("Выберите матч", tg.messages[0][1])
         self.assertIn("Открытые MATCH_ID", tg.messages[0][1])
+        self.assertIn("Выберите действие", tg.messages[-1][1])
+        self.assertIn((100, 2), tg.deleted_messages)
+
+    def test_dashboard_close_deletes_without_recreating_dashboard(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/start"))
+        bot.handle_update(callback_update("close", update_id=2))
+
+        self.assertEqual(len(tg.messages), 1)
         self.assertIn((100, 2), tg.deleted_messages)
 
     def test_rules_command_is_available_without_binding(self) -> None:
@@ -267,6 +281,7 @@ class BotFlowTest(unittest.TestCase):
         bot.handle_update(callback_update("back", update_id=9))
 
         self.assertIn((100, 9), tg.deleted_messages)
+        self.assertIn("Выберите действие", tg.messages[-1][1])
 
     def test_admin_publish_locks_and_posts_to_tournament_chat(self) -> None:
         repo = FakeRepository()
@@ -409,6 +424,8 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("🇦🇷 Аргентина - Франция 🇫🇷", text)
         self.assertIn("1️⃣ 1-0", text)
         self.assertNotIn("m1:", text)
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("📝 Сделать прогноз", button_names)
 
     def test_admin_score_recalculates_leaderboard(self) -> None:
         repo = FakeRepository()
