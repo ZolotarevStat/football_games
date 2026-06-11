@@ -80,11 +80,12 @@ Cloud Functions/webhook experiment files are archived under `legacy/cloud_functi
 - Choose one G+A author from team 1 active roster, sorted by G+A priority.
 - Choose one G+A author from team 2 active roster, sorted by G+A priority.
 - Confirm save.
-- `/my` shows latest predictions.
+- `/my` shows up to 5 active open predictions with edit buttons; a button can show all active predictions.
 - `/help` shows rules.
 - `/rules` shows detailed rules.
-- `/scores MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1` updates only score variants for an existing prediction before deadline.
-- `/authors MATCH_ID | Автор1 | Автор2` updates only G+A authors for an existing prediction before deadline.
+- `/scores` opens active prediction buttons and updates only score variants before deadline.
+- `/authors` opens active prediction buttons and updates only G+A authors before deadline.
+- `/scores MATCH_ID ...` and `/authors MATCH_ID ...` remain power-user shortcuts.
 
 ## Access Modes
 
@@ -96,9 +97,13 @@ Cloud Functions/webhook experiment files are archived under `legacy/cloud_functi
 Admin:
 
 - `/publish MATCH_ID` publishes closed predictions to `TOURNAMENT_CHAT_ID` after deadline and marks latest rows locked.
+- `/publish` opens a button picker for closed matches with predictions.
 - `/status MATCH_ID` shows submitted/missing participants for a match.
+- `/status` opens a button picker for open matches.
 - `/insights MATCH_ID` shows aggregate picks for a match: most popular first score, outcome shares, top G+A authors by team, and all selected players grouped by team.
+- `/insights` opens a button picker for matches with predictions.
 - `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
+- `/score` opens a button picker for matches with filled results.
 - `/score` updates `scoring`, `leaderboard`, metric leaderboards, author-pick analytics, and first-score belief analytics.
 - `/leaderboard` publishes `leaderboard` sheet if it is filled.
 - Daily notifications are sent at 12:00 MSK to users who have already submitted at least one prediction when there are open matches in the next 24 hours.

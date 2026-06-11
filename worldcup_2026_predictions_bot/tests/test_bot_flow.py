@@ -45,13 +45,20 @@ def message_update(
     }
 
 
-def callback_update(data: str, telegram_id: int = 100, username: str = "user", update_id: int = 2) -> dict:
+def callback_update(
+    data: str,
+    telegram_id: int = 100,
+    username: str = "user",
+    update_id: int = 2,
+    chat_type: str = "private",
+    chat_id: int | None = None,
+) -> dict:
     return {
         "update_id": update_id,
         "callback_query": {
             "id": f"cb{update_id}",
             "from": {"id": telegram_id, "username": username},
-            "message": {"message_id": update_id, "chat": {"id": telegram_id, "type": "private"}},
+            "message": {"message_id": update_id, "chat": {"id": telegram_id if chat_id is None else chat_id, "type": chat_type}},
             "data": data,
         },
     }
@@ -602,6 +609,145 @@ class BotFlowTest(unittest.TestCase):
         self.assertNotIn("m1:", text)
         button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
         self.assertIn("📝 Сделать прогноз", button_names)
+        self.assertTrue(any(name.startswith("✏️ Счета: Аргентина-Франция") for name in button_names))
+        self.assertTrue(any(name.startswith("🧩 Авторы: Аргентина-Франция") for name in button_names))
+
+    def test_my_predictions_hides_closed_matches_and_keeps_only_active_edit_buttons(self) -> None:
+        repo = FakeRepository()
+        repo.latest.extend(
+            [
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="m1",
+                    scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Месси",
+                    author_team2="Мбаппе",
+                ),
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="m2",
+                    scores=("2-0", "1-0", "1-1", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Винисиус",
+                    author_team2="Ямаль",
+                ),
+            ]
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/my"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Аргентина - Франция", text)
+        self.assertNotIn("Бразилия", text)
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertTrue(any(name.startswith("✏️ Счета: Аргентина-Франция") for name in button_names))
+        self.assertFalse(any(name.startswith("✏️ Счета: Бразилия-Испания") for name in button_names))
+
+    def test_my_predictions_limits_to_five_active_predictions_and_can_show_all(self) -> None:
+        repo = FakeRepository()
+        base_match = repo.matches["m1"]
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        for index in range(3, 9):
+            repo.matches[f"m{index}"] = Match(
+                match_id=f"m{index}",
+                group="B",
+                tour=str(index),
+                kickoff_msk=base_match.kickoff_msk + timedelta(days=index),
+                deadline_msk=base_match.deadline_msk + timedelta(days=index),
+                team1="Аргентина",
+                team2="Франция",
+                status="open",
+            )
+            repo.latest.append(
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id=f"m{index}",
+                    scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Месси",
+                    author_team2="Мбаппе",
+                )
+            )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/my"))
+
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("my:all", button_data)
+        self.assertIn("edit_saved_scores:m1", button_data)
+        self.assertIn("edit_saved_scores:m6", button_data)
+        self.assertNotIn("edit_saved_scores:m7", button_data)
+
+        bot.handle_update(callback_update("my:all", update_id=3))
+
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("edit_saved_scores:m8", button_data)
+
+    def test_scores_without_match_id_opens_active_prediction_picker_and_edits_selected_match(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/scores"))
+        self.assertIn("Выберите прогноз, где заменить счета", tg.messages[-1][1])
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("edit_saved_scores:m1", button_data)
+
+        bot.handle_update(callback_update("edit_saved_scores:m1", update_id=3))
+
+        self.assertIn("Введите новые 7 счетов", tg.messages[-1][1])
+        bot.handle_update(message_update("2-0,1-0,1-1,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("save:m1", update_id=4))
+
+        self.assertEqual(repo.latest[0].scores, ("2-0", "1-0", "1-1", "0-0", "2-1", "1-2", "0-1"))
+
+    def test_authors_without_match_id_opens_active_prediction_picker_and_reselects_authors(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/authors"))
+        self.assertIn("Выберите прогноз, где заменить авторов", tg.messages[-1][1])
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("edit_saved_authors:m1", button_data)
+
+        bot.handle_update(callback_update("edit_saved_authors:m1", update_id=3))
+
+        self.assertIn("Выберите автора Г+П для первой команды", tg.messages[-1][1])
+        bot.handle_update(callback_update("a1:m1:1", update_id=4))
+        bot.handle_update(callback_update("a2:m1:1", update_id=5))
+        bot.handle_update(callback_update("save:m1", update_id=6))
+
+        self.assertEqual(repo.latest[0].scores, ("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"))
+        self.assertEqual(repo.latest[0].author_team1, "Альварес")
+        self.assertEqual(repo.latest[0].author_team2, "Гризманн")
 
     def test_admin_score_recalculates_leaderboard(self) -> None:
         repo = FakeRepository()
@@ -654,6 +800,22 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("Статус прогнозов", text)
         self.assertIn("Сдали: 1/2", text)
         self.assertIn("Новый участник", text)
+
+    def test_admin_status_without_match_id_opens_match_picker(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/status", telegram_id=101, username="organizer_username"))
+
+        self.assertIn("Выберите матч для проверки статуса", tg.messages[-1][1])
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("admin_action:status:m1", button_data)
+        self.assertNotIn("admin_action:status:m2", button_data)
+
+        bot.handle_update(callback_update("admin_action:status:m1", telegram_id=101, username="organizer_username", update_id=3))
+
+        self.assertIn("Статус прогнозов: m1", tg.messages[-1][1])
 
     def test_admin_status_latest_uses_nearest_open_match(self) -> None:
         repo = FakeRepository()
@@ -728,6 +890,30 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("- Мбаппе — 2", text)
         self.assertIn("- Гризманн — 1", text)
 
+    def test_admin_insights_without_match_id_opens_prediction_match_picker(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/insights", telegram_id=101, username="organizer_username"))
+
+        self.assertIn("Выберите матч для агрегатов", tg.messages[-1][1])
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("admin_action:insights:m1", button_data)
+
+        bot.handle_update(callback_update("admin_action:insights:m1", telegram_id=101, username="organizer_username", update_id=3))
+
+        self.assertIn("Агрегаты прогнозов: m1", tg.messages[-1][1])
+
     def test_admin_insights_is_admin_only(self) -> None:
         repo = FakeRepository()
         tg = RecordingTelegramApi()
@@ -768,6 +954,53 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("/status MATCH_ID", tg.messages[-1][1])
         self.assertIn("/status_latest", tg.messages[-1][1])
         self.assertIn("/insights MATCH_ID", tg.messages[-1][1])
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("admin_menu:status", button_data)
+        self.assertIn("admin_menu:publish", button_data)
+        self.assertIn("admin_menu:score", button_data)
+
+    def test_admin_publish_without_match_id_can_publish_from_group_picker(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m2",
+                scores=tuple(["1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"]),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(
+            message_update(
+                "/publish",
+                telegram_id=101,
+                username="organizer_username",
+                chat_type="supergroup",
+                chat_id=-1001,
+            )
+        )
+
+        self.assertIn("Выберите матч для публикации", tg.messages[-1][1])
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("admin_action:publish:m2", button_data)
+
+        bot.handle_update(
+            callback_update(
+                "admin_action:publish:m2",
+                telegram_id=101,
+                username="organizer_username",
+                update_id=3,
+                chat_type="supergroup",
+                chat_id=-1001,
+            )
+        )
+
+        self.assertIn("m2", repo.locked_matches)
+        self.assertEqual(tg.messages[-2][0], -1001)
+        self.assertIn("Прогнозы закрыты", tg.messages[-2][1])
 
     def test_group_plain_text_is_ignored(self) -> None:
         repo = FakeRepository()
