@@ -165,9 +165,9 @@ class PredictionBot:
                 return
             self._send_my_predictions(chat_id, participant)
         elif command == "/publish":
-            self._publish_locked(chat_id, participant, username, arg.strip())
+            self._publish_locked(chat_id, participant, username, arg.strip(), is_private=is_private)
         elif command == "/leaderboard":
-            self._publish_leaderboard(chat_id, participant, username)
+            self._publish_leaderboard(chat_id, participant, username, is_private=is_private)
         elif command == "/score":
             self._score_results(chat_id, participant, username, arg.strip())
         elif command == "/status":
@@ -857,7 +857,15 @@ class PredictionBot:
             lines.append(format_prediction_for_my(prediction, self.repository.get_match(prediction.match_id)))
         self.telegram.send_message(chat_id, "\n".join(lines), self._dashboard_keyboard())
 
-    def _publish_locked(self, chat_id: int, participant: Participant, username: str, match_id: str) -> None:
+    def _publish_locked(
+        self,
+        chat_id: int,
+        participant: Participant,
+        username: str,
+        match_id: str,
+        *,
+        is_private: bool,
+    ) -> None:
         if not self._is_admin(participant, username):
             self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
             return
@@ -890,12 +898,16 @@ class PredictionBot:
                 f"Счета: {', '.join(prediction.scores)}\n"
                 f"{prediction.author_team1}, {prediction.author_team2}"
             )
-        target_chat_id = self.config.tournament_chat_id or str(chat_id)
-        self.telegram.send_message(target_chat_id, "\n".join(lines))
+        target_chat_id = self._broadcast_target_chat_id(chat_id, is_private=is_private)
+        try:
+            self.telegram.send_message(target_chat_id, "\n".join(lines))
+        except RuntimeError as error:
+            self.telegram.send_message(chat_id, self._broadcast_send_error(str(error), is_private=is_private))
+            return
         self.repository.mark_match_locked(match_id)
         self.telegram.send_message(chat_id, "Прогнозы опубликованы и помечены locked.")
 
-    def _publish_leaderboard(self, chat_id: int, participant: Participant, username: str) -> None:
+    def _publish_leaderboard(self, chat_id: int, participant: Participant, username: str, *, is_private: bool) -> None:
         if not self._is_admin(participant, username):
             self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
             return
@@ -903,8 +915,25 @@ class PredictionBot:
         if not rows:
             self.telegram.send_message(chat_id, "Лист leaderboard пуст или еще не готов.")
             return
-        target_chat_id = self.config.tournament_chat_id or str(chat_id)
-        self.telegram.send_message(target_chat_id, format_leaderboard(rows, title="🏆 Таблица после игрового дня"))
+        target_chat_id = self._broadcast_target_chat_id(chat_id, is_private=is_private)
+        try:
+            self.telegram.send_message(target_chat_id, format_leaderboard(rows, title="🏆 Таблица после игрового дня"))
+        except RuntimeError as error:
+            self.telegram.send_message(chat_id, self._broadcast_send_error(str(error), is_private=is_private))
+
+    def _broadcast_target_chat_id(self, chat_id: int | str, *, is_private: bool) -> str | int:
+        if not is_private:
+            return chat_id
+        return self.config.tournament_chat_id or str(chat_id)
+
+    def _broadcast_send_error(self, error_text: str, *, is_private: bool) -> str:
+        if is_private:
+            return (
+                "Не смог отправить сообщение в турнирный чат. "
+                "Проверьте TOURNAMENT_CHAT_ID или запустите команду прямо в турнирной группе. "
+                f"Ошибка Telegram: {error_text}"
+            )
+        return f"Не смог отправить сообщение в этот чат. Ошибка Telegram: {error_text}"
 
     def _score_results(self, chat_id: int, participant: Participant, username: str, arg: str) -> None:
         if not self._is_admin(participant, username):

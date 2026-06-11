@@ -15,20 +15,28 @@ from wc_predictions_bot.telegram_api import RecordingTelegramApi
 def make_config(
     open_registration_enabled: bool = False,
     allowed_usernames: frozenset[str] = frozenset(),
+    tournament_chat_id: str = "",
 ) -> Config:
     return replace(
         Config.from_env(),
         open_registration_enabled=open_registration_enabled,
         allowed_usernames=allowed_usernames,
+        tournament_chat_id=tournament_chat_id,
     )
 
 
-def message_update(text: str, telegram_id: int = 100, username: str = "user", chat_type: str = "private") -> dict:
+def message_update(
+    text: str,
+    telegram_id: int = 100,
+    username: str = "user",
+    chat_type: str = "private",
+    chat_id: int | None = None,
+) -> dict:
     return {
         "update_id": 1,
         "message": {
             "message_id": 1,
-            "chat": {"id": telegram_id, "type": chat_type},
+            "chat": {"id": telegram_id if chat_id is None else chat_id, "type": chat_type},
             "from": {"id": telegram_id, "username": username, "first_name": "Test", "last_name": "User"},
             "text": text,
         },
@@ -45,6 +53,17 @@ def callback_update(data: str, telegram_id: int = 100, username: str = "user", u
             "data": data,
         },
     }
+
+
+class FailingTelegramApi(RecordingTelegramApi):
+    def __init__(self, failing_chat_id: str | int) -> None:
+        super().__init__()
+        self.failing_chat_id = str(failing_chat_id)
+
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode=None) -> None:
+        if str(chat_id) == self.failing_chat_id:
+            raise RuntimeError('Telegram sendMessage failed: 400 {"description":"Bad Request: chat not found"}')
+        super().send_message(chat_id, text, reply_markup, parse_mode)
 
 
 class BotFlowTest(unittest.TestCase):
@@ -315,6 +334,53 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("Прогнозы закрыты", tg.messages[-2][1])
         self.assertIn("Тестовый участник", tg.messages[-2][1])
         self.assertNotIn("p1:", tg.messages[-2][1])
+
+    def test_admin_publish_in_group_uses_current_chat_over_configured_chat(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m2",
+                scores=tuple(["1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"]),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        tg = FailingTelegramApi(failing_chat_id="-999")
+        bot = PredictionBot(make_config(tournament_chat_id="-999"), repo, tg)
+
+        bot.handle_update(
+            message_update(
+                "/publish m2",
+                telegram_id=101,
+                username="organizer_username",
+                chat_type="supergroup",
+                chat_id=-1001,
+            )
+        )
+
+        self.assertIn("m2", repo.locked_matches)
+        self.assertEqual(tg.messages[-2][0], -1001)
+        self.assertIn("Прогнозы закрыты", tg.messages[-2][1])
+
+    def test_admin_publish_private_reports_bad_configured_chat_without_locking(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m2",
+                scores=tuple(["1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"]),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        tg = FailingTelegramApi(failing_chat_id="-999")
+        bot = PredictionBot(make_config(tournament_chat_id="-999"), repo, tg)
+
+        bot.handle_update(message_update("/publish m2", telegram_id=101, username="organizer_username"))
+
+        self.assertNotIn("m2", repo.locked_matches)
+        self.assertIn("Проверьте TOURNAMENT_CHAT_ID", tg.messages[-1][1])
 
     def test_submit_command_saves_without_callbacks(self) -> None:
         repo = FakeRepository()
