@@ -158,6 +158,37 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("m1", tg.messages[-1][1])
         self.assertNotIn("m2", tg.messages[-1][1])
 
+    def test_matches_command_marks_matches_with_saved_prediction_in_private_chat(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/matches"))
+
+        self.assertIn("✅ m1 — Аргентина - Франция", tg.messages[-1][1])
+
+    def test_predict_message_is_single_deletable_block(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+        bot.handle_update(callback_update("back", update_id=2))
+
+        self.assertEqual(len(tg.messages), 1)
+        self.assertIn("Выберите матч", tg.messages[0][1])
+        self.assertIn("Открытые MATCH_ID", tg.messages[0][1])
+        self.assertIn((100, 2), tg.deleted_messages)
+
     def test_rules_command_is_available_without_binding(self) -> None:
         repo = FakeRepository()
         tg = RecordingTelegramApi()

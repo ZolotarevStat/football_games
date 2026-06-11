@@ -76,7 +76,8 @@ class PredictionBot:
             self._send_rules(chat_id)
             return
         if command == "/matches":
-            self._send_matches(chat_id)
+            participant = self.repository.get_participant_by_telegram_id(telegram_id) if is_private else None
+            self._send_matches(chat_id, participant)
             return
 
         if not is_private and command not in self._group_commands():
@@ -264,7 +265,7 @@ class PredictionBot:
         elif action == "my":
             self._send_my_predictions(chat_id, participant)
         elif action == "matches":
-            self._send_matches(chat_id)
+            self._send_matches(chat_id, participant)
         elif action == "rules":
             self._send_rules(chat_id)
         else:
@@ -328,27 +329,28 @@ class PredictionBot:
         if any(match.match_id not in visible_ids for match in closest_tour_matches):
             rows.append([{"text": "Все матчи ближайшего тура", "callback_data": f"tour:{closest_tour_matches[0].tour}"}])
         rows.append(self._back_row())
-        self.telegram.send_message(chat_id, "Выберите матч:", {"inline_keyboard": rows})
-        lines = ["Прогнозы отправляются в личке боту. Быстрое сохранение одной командой:"]
+        lines = ["Выберите матч:", "", "Прогнозы отправляются в личке боту. Быстрое сохранение одной командой:"]
         lines.append("/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2")
         lines.append("Открытые MATCH_ID:")
         for match in matches:
             lines.append(f"{match.match_id}: {match.team1} - {match.team2}")
-        self.telegram.send_message(chat_id, "\n".join(lines))
+        self.telegram.send_message(chat_id, "\n".join(lines), {"inline_keyboard": rows})
 
-    def _send_matches(self, chat_id: int) -> None:
+    def _send_matches(self, chat_id: int, participant: Participant | None = None) -> None:
         matches = self._visible_open_matches(self.repository.get_open_matches(self._now_iso()))
         if not matches:
             self.telegram.send_message(chat_id, "Открытых матчей на ближайший слот сейчас нет.")
             return
+        submitted_match_ids = self._submitted_match_ids(participant) if participant else set()
         lines = [
             "🗓 Ближайшие открытые матчи:",
             "Используйте MATCH_ID в /submit или /authors.",
             "",
         ]
         for match in matches:
+            marker = "✅ " if match.match_id in submitted_match_ids else ""
             lines.append(
-                f"{match.match_id} — {match.team1} - {match.team2}\n"
+                f"{marker}{match.match_id} — {match.team1} - {match.team2}\n"
                 f"дедлайн {match.deadline_msk:%d.%m %H:%M} МСК"
             )
         self.telegram.send_message(chat_id, "\n".join(lines))
@@ -936,6 +938,9 @@ class PredictionBot:
             used.add(prediction.author_team2)
         used.discard("")
         return used
+
+    def _submitted_match_ids(self, participant: Participant) -> set[str]:
+        return {prediction.match_id for prediction in self.repository.get_latest_for_participant(participant.participant_id)}
 
     def _hidden_author_names_for_team(self, draft: PredictionDraft, match: Match, team: str) -> list[str]:
         used_names = self._used_author_names(
