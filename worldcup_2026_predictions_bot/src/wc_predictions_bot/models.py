@@ -49,6 +49,8 @@ class LatestPrediction:
     scores: tuple[str, ...]
     author_team1: str
     author_team2: str
+    display_name: str = ""
+    match_name: str = ""
     submitted_at_msk: str = ""
     is_locked: bool = False
 

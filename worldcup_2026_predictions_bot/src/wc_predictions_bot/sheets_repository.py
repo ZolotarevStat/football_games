@@ -179,13 +179,16 @@ class SheetsRepository(PredictionRepository):
 
     def get_open_matches(self, now_iso_msk: str) -> list[Match]:
         now_msk = datetime.fromisoformat(now_iso_msk)
-        matches = [_match(row) for row in self._read_sheet("matches")]
+        matches = self.get_matches()
         return [
             match
             for match in matches
             if match.status.lower() in {"open", "scheduled", ""}
             and now_msk < match.deadline_msk
         ]
+
+    def get_matches(self) -> list[Match]:
+        return [_match(row) for row in self._read_sheet("matches")]
 
     def get_match(self, match_id: str) -> Match | None:
         for row in self._read_sheet("matches"):
@@ -226,6 +229,20 @@ class SheetsRepository(PredictionRepository):
             if row.get("validation_status", "valid") == "valid"
         ]
 
+    def get_participants_with_predictions(self) -> list[Participant]:
+        predicted_participant_ids = {
+            prediction.participant_id
+            for prediction in self.get_all_latest_predictions()
+            if prediction.participant_id
+        }
+        return [
+            participant
+            for participant in self.get_participants()
+            if participant.participant_id in predicted_participant_ids
+            and participant.telegram_id
+            and participant.status.strip().lower() in {"active", "admin", ""}
+        ]
+
     def get_results(self) -> list[MatchResult]:
         return [
             _result(row)
@@ -238,6 +255,11 @@ class SheetsRepository(PredictionRepository):
 
     def replace_leaderboard_rows(self, rows: list[dict[str, str]]) -> None:
         self._replace_dict_rows("leaderboard", rows)
+
+    def replace_analytics_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> None:
+        if sheet_name not in SHEET_HEADERS:
+            raise ValueError(f"Unknown analytics sheet: {sheet_name}")
+        self._replace_dict_rows(sheet_name, rows)
 
     def save_prediction(
         self,
@@ -258,6 +280,10 @@ class SheetsRepository(PredictionRepository):
                 existing_row_index = index
                 break
 
+        participant = self._participant_by_id(participant_id)
+        match = self.get_match(match_id)
+        display_name = participant.display_name if participant else participant_id
+        match_name = f"{match.team1} - {match.team2}" if match else match_id
         submission_id = uuid.uuid4().hex
         raw_row = {
             "submission_id": submission_id,
@@ -275,7 +301,8 @@ class SheetsRepository(PredictionRepository):
         self._append_dict("predictions_raw", raw_row)
 
         latest_row = {
-            "participant_id": participant_id,
+            "display_name": display_name,
+            "match_name": match_name,
             "match_id": match_id,
             "submitted_at_msk": timestamp_msk,
             **{f"score_{index}": score for index, score in enumerate(scores, start=1)},
@@ -284,6 +311,7 @@ class SheetsRepository(PredictionRepository):
             "is_locked": "FALSE",
             "validation_status": "valid",
             "replaces_submission_id": submission_id,
+            "participant_id": participant_id,
         }
         if existing_row_index:
             self._update_row("predictions_latest", existing_row_index, latest_row)
@@ -302,6 +330,38 @@ class SheetsRepository(PredictionRepository):
 
     def get_leaderboard_rows(self) -> list[dict[str, str]]:
         return self._read_sheet("leaderboard", use_cache=False)
+
+    def notification_was_sent(self, notification_key: str) -> bool:
+        return any(
+            row.get("notification_key") == notification_key
+            for row in self._read_sheet("notifications_log", use_cache=False)
+        )
+
+    def record_notification(
+        self,
+        *,
+        notification_key: str,
+        notification_type: str,
+        sent_at_msk: str,
+        recipient_count: int,
+        details: str,
+    ) -> None:
+        self._append_dict(
+            "notifications_log",
+            {
+                "notification_key": notification_key,
+                "notification_type": notification_type,
+                "sent_at_msk": sent_at_msk,
+                "recipient_count": str(recipient_count),
+                "details": details,
+            },
+        )
+
+    def _participant_by_id(self, participant_id: str) -> Participant | None:
+        for participant in self.get_participants():
+            if participant.participant_id == participant_id:
+                return participant
+        return None
 
 
 def _parse_dt(value: str) -> datetime:
@@ -367,6 +427,8 @@ def _latest(row: dict[str, str]) -> LatestPrediction:
         scores=scores,
         author_team1=row.get("author_team1", ""),
         author_team2=row.get("author_team2", ""),
+        display_name=row.get("display_name", ""),
+        match_name=row.get("match_name", ""),
         is_locked=row.get("is_locked", "").strip().upper() in {"TRUE", "1", "YES"},
     )
 

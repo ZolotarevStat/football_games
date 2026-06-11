@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import replace
 
 from wc_predictions_bot.bot import PredictionBot
@@ -86,6 +87,9 @@ class BotFlowTest(unittest.TestCase):
         self.assertIsNotNone(participant)
         self.assertEqual(participant.display_name, "Test User")
         self.assertIn("Готово", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("📝 Сделать прогноз", button_names)
+        self.assertIn("🔒 Мои прогнозы", button_names)
 
     def test_open_registration_predict_without_pin_shows_matches(self) -> None:
         repo = FakeRepository()
@@ -154,6 +158,51 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("m1", tg.messages[-1][1])
         self.assertNotIn("m2", tg.messages[-1][1])
 
+    def test_matches_command_marks_matches_with_saved_prediction_in_private_chat(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/matches"))
+
+        self.assertIn("✅ m1 — Аргентина - Франция", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("📝 Сделать прогноз", button_names)
+
+    def test_predict_message_is_single_deletable_block(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+        bot.handle_update(callback_update("back", update_id=2))
+
+        self.assertEqual(len(tg.messages), 2)
+        self.assertIn("Выберите матч", tg.messages[0][1])
+        self.assertIn("Открытые MATCH_ID", tg.messages[0][1])
+        self.assertIn("Выберите действие", tg.messages[-1][1])
+        self.assertIn((100, 2), tg.deleted_messages)
+
+    def test_dashboard_close_deletes_without_recreating_dashboard(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/start"))
+        bot.handle_update(callback_update("close", update_id=2))
+
+        self.assertEqual(len(tg.messages), 1)
+        self.assertIn((100, 2), tg.deleted_messages)
+
     def test_rules_command_is_available_without_binding(self) -> None:
         repo = FakeRepository()
         tg = RecordingTelegramApi()
@@ -174,16 +223,33 @@ class BotFlowTest(unittest.TestCase):
                 author_team2="Гризманн",
             )
         )
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="other2",
+                scores=tuple(["1-0"] * 7),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
         bot.handle_update(callback_update("m:m1"))
+        self.assertIn("Вы выбрали матч: Аргентина - Франция", tg.messages[-1][1])
+        self.assertIn("Уже задействованы", tg.messages[-1][1])
+        self.assertIn("Месси", tg.messages[-1][1])
+        self.assertIn("Гризманн", tg.messages[-1][1])
+        self.assertNotIn("Винисиус", tg.messages[-1][1])
+        self.assertNotIn("Ямаль", tg.messages[-1][1])
         bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
 
         keyboard = tg.messages[-1][2]["inline_keyboard"]
         button_names = [button["text"] for row in keyboard for button in row]
         self.assertNotIn("Месси", button_names)
         self.assertIn("Альварес", button_names)
+        self.assertIn("Скрыты, потому что уже выбраны", tg.messages[-1][1])
+        self.assertIn("Месси", tg.messages[-1][1])
         self.assertEqual(len(repo.raw_rows), 0)
 
     def test_author_buttons_show_top_5_preview_and_full_list_button(self) -> None:
@@ -206,16 +272,28 @@ class BotFlowTest(unittest.TestCase):
         keyboard = tg.messages[-1][2]["inline_keyboard"]
         button_names = [button["text"] for row in keyboard for button in row]
         self.assertNotIn("Игрок 12", button_names)
-        self.assertEqual(button_names[-1], "Показать полный список")
-        self.assertEqual(len(button_names), 6)
+        self.assertIn("Показать полный список", button_names)
+        self.assertEqual(button_names[-1], "↩️ Назад")
+        self.assertEqual(len(button_names), 7)
 
         bot.handle_update(callback_update("full:a1:m1", update_id=3))
 
         keyboard = tg.messages[-1][2]["inline_keyboard"]
         button_names = [button["text"] for row in keyboard for button in row]
         self.assertIn("Игрок 12", button_names)
-        self.assertEqual(len(button_names), 12)
+        self.assertEqual(button_names[-1], "↩️ Назад")
+        self.assertEqual(len(button_names), 13)
         self.assertIn((100, 3), tg.deleted_messages)
+
+    def test_back_callback_deletes_active_message(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(callback_update("back", update_id=9))
+
+        self.assertIn((100, 9), tg.deleted_messages)
+        self.assertIn("Выберите действие", tg.messages[-1][1])
 
     def test_admin_publish_locks_and_posts_to_tournament_chat(self) -> None:
         repo = FakeRepository()
@@ -231,10 +309,12 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/publish m2", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/publish m2", telegram_id=101, username="organizer_username"))
 
         self.assertIn("m2", repo.locked_matches)
-        self.assertIn("Закрытые прогнозы", tg.messages[-2][1])
+        self.assertIn("Прогнозы закрыты", tg.messages[-2][1])
+        self.assertIn("Тестовый участник", tg.messages[-2][1])
+        self.assertNotIn("p1:", tg.messages[-2][1])
 
     def test_submit_command_saves_without_callbacks(self) -> None:
         repo = FakeRepository()
@@ -250,6 +330,8 @@ class BotFlowTest(unittest.TestCase):
         self.assertEqual(len(repo.raw_rows), 1)
         self.assertEqual(repo.latest[0].match_id, "m1")
         self.assertIn("Прогноз сохранен", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("🔒 Мои прогнозы", button_names)
 
     def test_submit_command_suggests_roster_player_for_manual_typo(self) -> None:
         repo = FakeRepository()
@@ -354,6 +436,8 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("🇦🇷 Аргентина - Франция 🇫🇷", text)
         self.assertIn("1️⃣ 1-0", text)
         self.assertNotIn("m1:", text)
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("📝 Сделать прогноз", button_names)
 
     def test_admin_score_recalculates_leaderboard(self) -> None:
         repo = FakeRepository()
@@ -377,13 +461,14 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/score all", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/score all", telegram_id=101, username="organizer_username"))
 
         self.assertEqual(repo.scoring_rows[0]["total_points"], "18")
+        self.assertEqual(repo.analytics_rows["leaderboard_by_total"][0]["display_name"], "Тестовый участник")
         self.assertEqual(repo.leaderboard_rows[0]["display_name"], "Тестовый участник")
         self.assertIn("🏆 Таблица", tg.messages[-1][1])
         self.assertIn("Тестовый участник", tg.messages[-1][1])
-        self.assertIn("матч.; счета", tg.messages[-1][1])
+        self.assertIn("счет 12 | голы 4 | пасы 2", tg.messages[-1][1])
 
     def test_admin_status_shows_missing_participants_without_predictions(self) -> None:
         repo = FakeRepository()
@@ -399,12 +484,54 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/status m1", telegram_id=101, username="az_stat"))
+        bot.handle_update(message_update("/status m1", telegram_id=101, username="organizer_username"))
 
         text = tg.messages[-1][1]
         self.assertIn("Статус прогнозов", text)
         self.assertIn("Сдали: 1/2", text)
         self.assertIn("Новый участник", text)
+
+    def test_admin_status_latest_uses_nearest_open_match(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/status_latest", telegram_id=101, username="organizer_username"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Статус прогнозов: m1", text)
+        self.assertIn("Сдали: 1/2", text)
+
+    def test_status_latest_is_admin_only(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/status_latest", telegram_id=100, username="user"))
+
+        self.assertIn("только организаторам", tg.messages[-1][1])
+
+    def test_admin_command_shows_admin_reference_only_to_admins(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/admin", telegram_id=100, username="user"))
+        self.assertIn("только организаторам", tg.messages[-1][1])
+
+        bot.handle_update(message_update("/admin", telegram_id=101, username="organizer_username"))
+        self.assertIn("Админские команды", tg.messages[-1][1])
+        self.assertIn("/status MATCH_ID", tg.messages[-1][1])
+        self.assertIn("/status_latest", tg.messages[-1][1])
 
     def test_group_plain_text_is_ignored(self) -> None:
         repo = FakeRepository()
@@ -424,19 +551,20 @@ class BotFlowTest(unittest.TestCase):
 
         self.assertIn("только в личке", tg.messages[-1][1])
 
-    def test_predict_shows_only_next_three_days(self) -> None:
+    def test_predict_shows_at_least_five_nearest_matches(self) -> None:
         repo = FakeRepository()
         base_match = repo.matches["m1"]
-        repo.matches["m3"] = Match(
-            match_id="m3",
-            group="B",
-            tour="2",
-            kickoff_msk=base_match.kickoff_msk + timedelta(days=5),
-            deadline_msk=base_match.deadline_msk + timedelta(days=5),
-            team1="Аргентина",
-            team2="Франция",
-            status="open",
-        )
+        for index in range(3, 8):
+            repo.matches[f"m{index}"] = Match(
+                match_id=f"m{index}",
+                group="B",
+                tour=str(index),
+                kickoff_msk=base_match.kickoff_msk + timedelta(days=index),
+                deadline_msk=base_match.deadline_msk + timedelta(days=index),
+                team1="Аргентина",
+                team2="Франция",
+                status="open",
+            )
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
@@ -445,27 +573,80 @@ class BotFlowTest(unittest.TestCase):
         keyboard = tg.messages[0][2]["inline_keyboard"]
         callback_ids = [button["callback_data"] for row in keyboard for button in row]
         self.assertIn("m:m1", callback_ids)
-        self.assertNotIn("m:m3", callback_ids)
+        self.assertIn("m:m5", callback_ids)
+        self.assertNotIn("m:m7", callback_ids)
 
-    def test_predict_falls_back_to_first_three_match_days_before_tournament_start(self) -> None:
+    def test_predict_includes_all_matches_from_three_nearest_match_days(self) -> None:
         repo = FakeRepository()
         base_match = repo.matches["m1"]
+        for index in range(3, 9):
+            day_offset = 1 if index <= 5 else 2
+            repo.matches[f"m{index}"] = Match(
+                match_id=f"m{index}",
+                group="B",
+                tour="1",
+                kickoff_msk=base_match.kickoff_msk + timedelta(days=day_offset, minutes=index),
+                deadline_msk=base_match.deadline_msk + timedelta(days=day_offset, minutes=index),
+                team1="Аргентина",
+                team2="Франция",
+                status="open",
+            )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+
+        keyboard = tg.messages[0][2]["inline_keyboard"]
+        callback_ids = [button["callback_data"] for row in keyboard for button in row]
+        self.assertIn("m:m8", callback_ids)
+
+    def test_predict_can_show_all_matches_from_closest_tour(self) -> None:
+        repo = FakeRepository()
+        base_match = repo.matches["m1"]
+        for index in range(3, 9):
+            repo.matches[f"m{index}"] = Match(
+                match_id=f"m{index}",
+                group="B",
+                tour="1",
+                kickoff_msk=base_match.kickoff_msk + timedelta(days=index),
+                deadline_msk=base_match.deadline_msk + timedelta(days=index),
+                team1="Аргентина",
+                team2="Франция",
+                status="open",
+            )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+
+        keyboard = tg.messages[0][2]["inline_keyboard"]
+        callback_ids = [button["callback_data"] for row in keyboard for button in row]
+        self.assertIn("tour:1", callback_ids)
+
+        bot.handle_update(callback_update("tour:1", update_id=3))
+
+        keyboard = tg.messages[-1][2]["inline_keyboard"]
+        callback_ids = [button["callback_data"] for row in keyboard for button in row]
+        self.assertIn("m:m8", callback_ids)
+
+    def test_daily_notifications_send_once_to_participants_with_predictions(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m2",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        notification_now = datetime.now(ZoneInfo("Europe/Moscow")).replace(hour=12, minute=0, second=0, microsecond=0)
         repo.matches["m1"] = Match(
             match_id="m1",
-            group=base_match.group,
-            tour=base_match.tour,
-            kickoff_msk=base_match.kickoff_msk + timedelta(days=5),
-            deadline_msk=base_match.deadline_msk + timedelta(days=5),
-            team1=base_match.team1,
-            team2=base_match.team2,
-            status="open",
-        )
-        repo.matches["m3"] = Match(
-            match_id="m3",
-            group="B",
-            tour="2",
-            kickoff_msk=base_match.kickoff_msk + timedelta(days=9),
-            deadline_msk=base_match.deadline_msk + timedelta(days=9),
+            group="A",
+            tour="1",
+            kickoff_msk=notification_now + timedelta(hours=3),
+            deadline_msk=notification_now + timedelta(hours=2, minutes=55),
             team1="Аргентина",
             team2="Франция",
             status="open",
@@ -473,12 +654,14 @@ class BotFlowTest(unittest.TestCase):
         tg = RecordingTelegramApi()
         bot = PredictionBot(make_config(), repo, tg)
 
-        bot.handle_update(message_update("/predict"))
+        sent_count = bot.maybe_send_daily_match_notifications(notification_now)
+        second_sent_count = bot.maybe_send_daily_match_notifications(notification_now)
 
-        keyboard = tg.messages[0][2]["inline_keyboard"]
-        callback_ids = [button["callback_data"] for row in keyboard for button in row]
-        self.assertIn("m:m1", callback_ids)
-        self.assertNotIn("m:m3", callback_ids)
+        self.assertEqual(sent_count, 1)
+        self.assertEqual(second_sent_count, 0)
+        self.assertEqual(tg.messages[-1][0], "100")
+        self.assertIn("Матчи ближайших 24 часов", tg.messages[-1][1])
+        self.assertEqual(len(repo.notifications), 1)
 
 
 if __name__ == "__main__":

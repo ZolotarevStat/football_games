@@ -43,6 +43,13 @@ def telegram_post(token: str, method: str, payload: dict[str, Any], *, trust_env
     return data
 
 
+def safe_exception_message(exc: Exception, token: str) -> str:
+    message = str(exc)
+    if token:
+        message = message.replace(token, "<redacted-token>")
+    return message
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", default=".env")
@@ -71,11 +78,12 @@ def main() -> None:
         )
         LOG.info("Webhook disabled. Polling can receive updates.")
     except Exception as exc:
-        LOG.warning("Could not disable webhook before polling: %s", exc)
+        LOG.warning("Could not disable webhook before polling: %s", safe_exception_message(exc, token))
 
     LOG.info("Polling started. trust_env_proxy=%s Press Ctrl+C to stop.", args.trust_env_proxy)
     while True:
         try:
+            bot.maybe_send_daily_match_notifications()
             data = telegram_get(
                 token,
                 "getUpdates",
@@ -95,7 +103,7 @@ def main() -> None:
             LOG.info("Polling stopped.")
             return
         except Exception as exc:
-            LOG.warning("Polling iteration failed: %s: %s", exc.__class__.__name__, exc)
+            LOG.warning("Polling iteration failed: %s: %s", exc.__class__.__name__, safe_exception_message(exc, token))
             time.sleep(5)
 
 

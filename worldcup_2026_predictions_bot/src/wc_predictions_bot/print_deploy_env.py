@@ -41,7 +41,7 @@ def main() -> None:
         "GOOGLE_SPREADSHEET_ID": values.get("GOOGLE_SPREADSHEET_ID", ""),
         "GOOGLE_SERVICE_ACCOUNT_JSON_B64": service_account_b64,
         "TOURNAMENT_CHAT_ID": values.get("TOURNAMENT_CHAT_ID", ""),
-        "ADMIN_USERNAMES": values.get("ADMIN_USERNAMES", "az_stat,SanMorocco"),
+        "ADMIN_USERNAMES": values.get("ADMIN_USERNAMES", ""),
         "APP_TZ": values.get("APP_TZ", "Europe/Moscow"),
         "CACHE_TTL_SECONDS": values.get("CACHE_TTL_SECONDS", "60"),
         "DRAFT_TTL_SECONDS": values.get("DRAFT_TTL_SECONDS", "1800"),

@@ -24,7 +24,7 @@ TELEGRAM_BOT_TOKEN
 GOOGLE_SPREADSHEET_ID
 GOOGLE_SERVICE_ACCOUNT_JSON_B64
 TOURNAMENT_CHAT_ID
-ADMIN_USERNAMES=az_stat,SanMorocco
+ADMIN_USERNAMES=organizer_username
 OPEN_REGISTRATION_ENABLED=false
 ALLOWED_USERNAMES=
 APP_TZ=Europe/Moscow
@@ -85,43 +85,6 @@ systemctl is-active wc-predictions-bot
 5. Confirm save.
 6. Check `predictions_raw` and `predictions_latest` in Google Sheets.
 
-## Webhook Function Alternative
-
-Yandex Cloud Function behind API Gateway or direct HTTPS trigger.
-
-## Function
-
-Use Python 3.11+ runtime.
-
-Entrypoint:
-
-```text
-main.handler
-```
-
-Environment variables:
-
-```text
-TELEGRAM_BOT_TOKEN
-GOOGLE_SPREADSHEET_ID
-GOOGLE_SERVICE_ACCOUNT_JSON_B64
-TOURNAMENT_CHAT_ID
-ADMIN_USERNAMES=az_stat,SanMorocco
-OPEN_REGISTRATION_ENABLED=false
-ALLOWED_USERNAMES=
-APP_TZ=Europe/Moscow
-CACHE_TTL_SECONDS=60
-DRAFT_TTL_SECONDS=1800
-```
-
-Package contents should include:
-
-```text
-main.py
-requirements.txt
-src/wc_predictions_bot/**
-```
-
 ## Setup Order
 
 1. Create Telegram bot token via BotFather.
@@ -132,15 +95,19 @@ src/wc_predictions_bot/**
 base64 -i service-account.json
 ```
 
-4. Deploy function with env vars above.
+4. Deploy the VM worker with env vars above.
 5. Run the sheet schema setup against the target spreadsheet.
-6. Set Telegram webhook to deployed HTTPS URL.
-7. Send `/start <invite_code>` from one test Telegram account.
+6. Ensure Telegram webhook is disabled; polling does this on worker startup.
+7. Send `/start <invite_code>` or `/start` in open-registration mode from one test Telegram account.
 8. Run one full prediction on a future test match.
 9. Run `/publish <match_id>` on an already-deadline-passed test match.
 
 ## Stop Rules
 
-- Cloud packaging >45 minutes: switch to Railway/Render Python service.
 - Google auth >45 minutes: use Apps Script write endpoint fallback.
-- Webhook setup >30 minutes: use polling on always-on service for MVP.
+- Webhook setup >30 minutes: do not return to webhook; use polling on always-on service for MVP.
+
+## Legacy Webhook Artifacts
+
+Cloud Functions/API Gateway files from the early experiment are archived under `legacy/cloud_functions/`.
+They are not part of the active deployment path.

@@ -23,7 +23,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        admins = _parse_usernames(os.getenv("ADMIN_USERNAMES", "az_stat,SanMorocco"))
+        admins = _parse_usernames(os.getenv("ADMIN_USERNAMES", ""))
         allowed_usernames = _parse_usernames(os.getenv("ALLOWED_USERNAMES", ""))
         return cls(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
