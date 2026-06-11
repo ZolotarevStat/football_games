@@ -26,6 +26,7 @@ LOG = logging.getLogger(__name__)
 AUTHOR_PREVIEW_LIMIT = 5
 DEFAULT_MATCH_LIMIT = 5
 MATCH_DAY_LIMIT = 3
+BACK_BUTTON_TEXT = "↩️ Назад"
 
 
 class PredictionBot:
@@ -123,7 +124,7 @@ class PredictionBot:
 
         if command == "/cancel":
             self.drafts.clear(telegram_id)
-            self.telegram.send_message(chat_id, "Черновик сброшен.")
+            self._send_dashboard(chat_id, participant, "Черновик сброшен.\n\nВыберите следующее действие:")
             return
 
         state = self.drafts.get(telegram_id)
@@ -159,6 +160,8 @@ class PredictionBot:
             self._score_results(chat_id, participant, username, arg.strip())
         elif command == "/status":
             self._send_match_status(chat_id, participant, username, arg.strip())
+        elif command == "/admin":
+            self._send_admin_help(chat_id, participant, username)
         else:
             self.telegram.send_message(chat_id, "Команда не распознана. Используйте /matches, /predict, /my, /authors или /help.")
 
@@ -176,6 +179,9 @@ class PredictionBot:
             self.telegram.answer_callback_query(callback_id)
         except Exception:
             LOG.warning("answerCallbackQuery failed; continuing callback handling")
+        if data == "back":
+            self._delete_message_safely(chat_id, message_id)
+            return
         participant = self.repository.get_participant_by_telegram_id(telegram_id)
         if not participant and self.config.open_registration_enabled and self._is_private_message(message):
             if self._can_register_open_participant(user):
@@ -190,7 +196,10 @@ class PredictionBot:
             self._send_private_chat_notice(chat_id)
             return
 
-        if data.startswith("m:"):
+        if data.startswith("dash:"):
+            self._delete_message_safely(chat_id, message_id)
+            self._handle_dashboard_action(chat_id, participant, data[5:])
+        elif data.startswith("m:"):
             self._delete_message_safely(chat_id, message_id)
             self._start_prediction_for_match(chat_id, telegram_id, participant, data[2:])
         elif data.startswith("a1:"):
@@ -210,11 +219,11 @@ class PredictionBot:
             self._send_tour_matches(chat_id, data[5:])
         elif data.startswith("save:"):
             self._delete_message_safely(chat_id, message_id)
-            self._confirm_save(chat_id, telegram_id, update_id, data[5:])
+            self._confirm_save(chat_id, telegram_id, participant, update_id, data[5:])
         elif data == "cancel":
             self._delete_message_safely(chat_id, message_id)
             self.drafts.clear(telegram_id)
-            self.telegram.send_message(chat_id, "Черновик сброшен.")
+            self._send_dashboard(chat_id, participant, "Черновик сброшен.\n\nВыберите следующее действие:")
 
     def _bind(self, chat_id: int, invite_code: str, telegram_id: str, username: str) -> None:
         participant = self.repository.bind_participant(invite_code, telegram_id, username, self._now_iso())
@@ -224,12 +233,42 @@ class PredictionBot:
         self._send_main_menu(chat_id, participant)
 
     def _send_main_menu(self, chat_id: int, participant: Participant) -> None:
-        self.telegram.send_message(
+        self._send_dashboard(
             chat_id,
+            participant,
             f"Готово, {participant.display_name}.\n"
-            "Прогнозы отправляются только в личке этому боту.\n"
-            "Команды: /matches - матчи, /predict - сделать прогноз, /my - мои прогнозы, /help - помощь.",
+            "Прогнозы отправляются только в личке этому боту.\n\n"
+            "Выберите действие:",
         )
+
+    def _send_dashboard(self, chat_id: int, participant: Participant, text: str | None = None) -> None:
+        message = text or f"👤 {participant.display_name}\n\nВыберите действие:"
+        self.telegram.send_message(chat_id, message, self._dashboard_keyboard())
+
+    def _dashboard_keyboard(self) -> dict[str, list[list[dict[str, str]]]]:
+        return {
+            "inline_keyboard": [
+                [{"text": "📝 Сделать прогноз", "callback_data": "dash:predict"}],
+                [{"text": "🔒 Мои прогнозы", "callback_data": "dash:my"}],
+                [
+                    {"text": "🗓 Матчи", "callback_data": "dash:matches"},
+                    {"text": "📘 Правила", "callback_data": "dash:rules"},
+                ],
+                [{"text": BACK_BUTTON_TEXT, "callback_data": "back"}],
+            ]
+        }
+
+    def _handle_dashboard_action(self, chat_id: int, participant: Participant, action: str) -> None:
+        if action == "predict":
+            self._send_open_matches(chat_id)
+        elif action == "my":
+            self._send_my_predictions(chat_id, participant)
+        elif action == "matches":
+            self._send_matches(chat_id)
+        elif action == "rules":
+            self._send_rules(chat_id)
+        else:
+            self._send_dashboard(chat_id, participant)
 
     def _register_open_participant(self, user: dict[str, Any]) -> Participant:
         telegram_id = str(user.get("id", ""))
@@ -288,6 +327,7 @@ class PredictionBot:
         visible_ids = {match.match_id for match in matches}
         if any(match.match_id not in visible_ids for match in closest_tour_matches):
             rows.append([{"text": "Все матчи ближайшего тура", "callback_data": f"tour:{closest_tour_matches[0].tour}"}])
+        rows.append(self._back_row())
         self.telegram.send_message(chat_id, "Выберите матч:", {"inline_keyboard": rows})
         lines = ["Прогнозы отправляются в личке боту. Быстрое сохранение одной командой:"]
         lines.append("/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2")
@@ -355,6 +395,7 @@ class PredictionBot:
             [{"text": self._match_button(match), "callback_data": f"m:{match.match_id}"}]
             for match in matches
         ]
+        rows.append(self._back_row())
         self.telegram.send_message(chat_id, f"Все матчи ближайшего тура ({tour}):", {"inline_keyboard": rows})
 
     def _start_prediction_for_match(self, chat_id: int, telegram_id: str, participant: Participant, match_id: str) -> None:
@@ -369,10 +410,29 @@ class PredictionBot:
             return
         draft = PredictionDraft(participant_id=participant.participant_id, telegram_id=telegram_id, match_id=match_id)
         self.drafts.set(telegram_id, "scores", draft)
+        used_names = self._used_author_names(
+            self.repository.get_latest_for_participant(participant.participant_id),
+            current_match_id=match.match_id,
+        )
+        lines = [
+            f"Вы выбрали матч: {match.team1} - {match.team2}",
+            f"Дедлайн: {match.deadline_msk:%d.%m %H:%M} МСК",
+            "",
+            "Введите 7 уникальных счетов в порядке вероятности через запятую.",
+            "Пример: 1-0,1-1,2-0,0-0,2-1,1-2,0-1",
+        ]
+        if used_names:
+            lines.extend(
+                [
+                    "",
+                    "Уже задействованы в других актуальных прогнозах:",
+                    ", ".join(sorted(used_names)),
+                    "Эти игроки будут скрыты при выборе авторов.",
+                ]
+            )
         self.telegram.send_message(
             chat_id,
-            "Введите 7 уникальных счетов в порядке вероятности через запятую.\n"
-            "Пример: 1-0,1-1,2-0,0-0,2-1,1-2,0-1",
+            "\n".join(lines),
         )
 
     def _handle_scores_text(self, chat_id: int, telegram_id: str, text: str, draft: PredictionDraft) -> None:
@@ -399,9 +459,20 @@ class PredictionBot:
         ]
         if not full_list and len(team_players) > AUTHOR_PREVIEW_LIMIT:
             rows.append([{"text": "Показать полный список", "callback_data": f"full:{prefix}:{match.match_id}"}])
+        rows.append(self._back_row())
         label = "первой" if first_team else "второй"
         suffix = "" if full_list else f" — топ-{AUTHOR_PREVIEW_LIMIT} доступных"
-        self.telegram.send_message(chat_id, f"Выберите автора Г+П для {label} команды ({team}){suffix}:", {"inline_keyboard": rows})
+        hidden_names = self._hidden_author_names_for_team(draft, match, team)
+        lines = [f"Выберите автора Г+П для {label} команды ({team}){suffix}:"]
+        if hidden_names:
+            lines.extend(
+                [
+                    "",
+                    "Скрыты, потому что уже выбраны в других актуальных прогнозах:",
+                    ", ".join(hidden_names),
+                ]
+            )
+        self.telegram.send_message(chat_id, "\n".join(lines), {"inline_keyboard": rows})
 
     def _send_full_author_buttons(self, chat_id: int, telegram_id: str, match_id: str, first_team: bool) -> None:
         state = self.drafts.get(telegram_id)
@@ -449,11 +520,19 @@ class PredictionBot:
         )
         keyboard = {"inline_keyboard": [[
             {"text": "Сохранить", "callback_data": f"save:{match.match_id}"},
-            {"text": "Отмена", "callback_data": "cancel"},
+        ], [
+            {"text": BACK_BUTTON_TEXT, "callback_data": "cancel"},
         ]]}
         self.telegram.send_message(chat_id, text, keyboard)
 
-    def _confirm_save(self, chat_id: int, telegram_id: str, update_id: str, callback_match_id: str) -> None:
+    def _confirm_save(
+        self,
+        chat_id: int,
+        telegram_id: str,
+        participant: Participant,
+        update_id: str,
+        callback_match_id: str,
+    ) -> None:
         state = self.drafts.get(telegram_id)
         if not state or state.step != "confirm":
             self.telegram.send_message(chat_id, "Черновик не найден. Начните заново через /predict.")
@@ -487,7 +566,7 @@ class PredictionBot:
             source_update_id=str(update_id),
         )
         self.drafts.clear(telegram_id)
-        self.telegram.send_message(chat_id, f"Прогноз сохранен. ID: {submission_id[:8]}")
+        self._send_dashboard(chat_id, participant, f"Прогноз сохранен. ID: {submission_id[:8]}\n\nВыберите следующее действие:")
 
     def _handle_submit_command(
         self,
@@ -549,10 +628,12 @@ class PredictionBot:
             source_update_id=str(update_id),
         )
         self.drafts.clear(telegram_id)
-        self.telegram.send_message(
+        self._send_dashboard(
             chat_id,
+            participant,
             f"Прогноз сохранен. ID: {submission_id[:8]}\n"
-            f"{match.team1} - {match.team2}: {', '.join(scores)}; {author_team1}, {author_team2}",
+            f"{match.team1} - {match.team2}: {', '.join(scores)}; {author_team1}, {author_team2}\n\n"
+            "Выберите следующее действие:",
         )
 
     def _author_validation_message(
@@ -636,10 +717,12 @@ class PredictionBot:
             source_update_id=str(update_id),
         )
         self.drafts.clear(telegram_id)
-        self.telegram.send_message(
+        self._send_dashboard(
             chat_id,
+            participant,
             f"Авторы обновлены. ID: {submission_id[:8]}\n"
-            f"{match.team1} - {match.team2}: {', '.join(prediction.scores)}; {author_team1}, {author_team2}",
+            f"{match.team1} - {match.team2}: {', '.join(prediction.scores)}; {author_team1}, {author_team2}\n\n"
+            "Выберите следующее действие:",
         )
 
     def _parse_authors_arg(self, arg: str) -> tuple[str, str, str]:
@@ -819,6 +902,21 @@ class PredictionBot:
             "/submit MATCH_ID 1-0,1-1,2-0,0-0,2-1,1-2,0-1 | Автор1 | Автор2",
         )
 
+    def _send_admin_help(self, chat_id: int, participant: Participant, username: str) -> None:
+        if not self._is_admin(participant, username):
+            self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
+            return
+        self.telegram.send_message(
+            chat_id,
+            "🛠 Админские команды\n"
+            "📋 /status MATCH_ID — кто сдал прогноз по матчу\n"
+            "🔒 /publish MATCH_ID — опубликовать прогнозы после дедлайна\n"
+            "🧮 /score MATCH_ID — пересчитать очки по матчу\n"
+            "🧮 /score all — пересчитать очки по всем заполненным результатам\n"
+            "🏆 /leaderboard — отправить таблицу лидеров в турнирный чат\n\n"
+            "Результаты матчей для MVP заносим вручную в Google Sheets.",
+        )
+
     def _available_author_players(self, draft: PredictionDraft, match: Match, team: str) -> list[Player]:
         players = self.repository.get_players_for_match(match)
         latest = self.repository.get_latest_for_participant(draft.participant_id)
@@ -839,6 +937,22 @@ class PredictionBot:
         used.discard("")
         return used
 
+    def _hidden_author_names_for_team(self, draft: PredictionDraft, match: Match, team: str) -> list[str]:
+        used_names = self._used_author_names(
+            self.repository.get_latest_for_participant(draft.participant_id),
+            current_match_id=draft.match_id,
+        )
+        if not used_names:
+            return []
+        players = self.repository.get_players_for_match(match)
+        return sorted(
+            {
+                player.display_name
+                for player in players
+                if player.team == team and player.display_name in used_names
+            }
+        )
+
     def _require_match(self, match_id: str) -> Match:
         match = self.repository.get_match(match_id)
         if not match:
@@ -847,6 +961,9 @@ class PredictionBot:
 
     def _match_button(self, match: Match) -> str:
         return f"{match.tour} {match.team1}-{match.team2} до {match.deadline_msk:%d.%m %H:%M}"
+
+    def _back_row(self) -> list[dict[str, str]]:
+        return [{"text": BACK_BUTTON_TEXT, "callback_data": "back"}]
 
     def maybe_send_daily_match_notifications(self, now: datetime | None = None) -> int:
         current = now or self._now()
@@ -932,6 +1049,7 @@ class PredictionBot:
             "/leaderboard",
             "/score",
             "/status",
+            "/admin",
         }
 
     def _send_private_chat_notice(self, chat_id: int) -> None:

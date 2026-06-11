@@ -87,6 +87,9 @@ class BotFlowTest(unittest.TestCase):
         self.assertIsNotNone(participant)
         self.assertEqual(participant.display_name, "Test User")
         self.assertIn("Готово", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("📝 Сделать прогноз", button_names)
+        self.assertIn("🔒 Мои прогнозы", button_names)
 
     def test_open_registration_predict_without_pin_shows_matches(self) -> None:
         repo = FakeRepository()
@@ -179,12 +182,17 @@ class BotFlowTest(unittest.TestCase):
         bot = PredictionBot(make_config(), repo, tg)
 
         bot.handle_update(callback_update("m:m1"))
+        self.assertIn("Вы выбрали матч: Аргентина - Франция", tg.messages[-1][1])
+        self.assertIn("Уже задействованы", tg.messages[-1][1])
+        self.assertIn("Месси", tg.messages[-1][1])
         bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
 
         keyboard = tg.messages[-1][2]["inline_keyboard"]
         button_names = [button["text"] for row in keyboard for button in row]
         self.assertNotIn("Месси", button_names)
         self.assertIn("Альварес", button_names)
+        self.assertIn("Скрыты, потому что уже выбраны", tg.messages[-1][1])
+        self.assertIn("Месси", tg.messages[-1][1])
         self.assertEqual(len(repo.raw_rows), 0)
 
     def test_author_buttons_show_top_5_preview_and_full_list_button(self) -> None:
@@ -207,16 +215,27 @@ class BotFlowTest(unittest.TestCase):
         keyboard = tg.messages[-1][2]["inline_keyboard"]
         button_names = [button["text"] for row in keyboard for button in row]
         self.assertNotIn("Игрок 12", button_names)
-        self.assertEqual(button_names[-1], "Показать полный список")
-        self.assertEqual(len(button_names), 6)
+        self.assertIn("Показать полный список", button_names)
+        self.assertEqual(button_names[-1], "↩️ Назад")
+        self.assertEqual(len(button_names), 7)
 
         bot.handle_update(callback_update("full:a1:m1", update_id=3))
 
         keyboard = tg.messages[-1][2]["inline_keyboard"]
         button_names = [button["text"] for row in keyboard for button in row]
         self.assertIn("Игрок 12", button_names)
-        self.assertEqual(len(button_names), 12)
+        self.assertEqual(button_names[-1], "↩️ Назад")
+        self.assertEqual(len(button_names), 13)
         self.assertIn((100, 3), tg.deleted_messages)
+
+    def test_back_callback_deletes_active_message(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(callback_update("back", update_id=9))
+
+        self.assertIn((100, 9), tg.deleted_messages)
 
     def test_admin_publish_locks_and_posts_to_tournament_chat(self) -> None:
         repo = FakeRepository()
@@ -253,6 +272,8 @@ class BotFlowTest(unittest.TestCase):
         self.assertEqual(len(repo.raw_rows), 1)
         self.assertEqual(repo.latest[0].match_id, "m1")
         self.assertIn("Прогноз сохранен", tg.messages[-1][1])
+        button_names = [button["text"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("🔒 Мои прогнозы", button_names)
 
     def test_submit_command_suggests_roster_player_for_manual_typo(self) -> None:
         repo = FakeRepository()
@@ -408,6 +429,18 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("Статус прогнозов", text)
         self.assertIn("Сдали: 1/2", text)
         self.assertIn("Новый участник", text)
+
+    def test_admin_command_shows_admin_reference_only_to_admins(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/admin", telegram_id=100, username="user"))
+        self.assertIn("только организаторам", tg.messages[-1][1])
+
+        bot.handle_update(message_update("/admin", telegram_id=101, username="az_stat"))
+        self.assertIn("Админские команды", tg.messages[-1][1])
+        self.assertIn("/status MATCH_ID", tg.messages[-1][1])
 
     def test_group_plain_text_is_ignored(self) -> None:
         repo = FakeRepository()
