@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from html import escape
 
 from .models import LatestPrediction, Match, MatchResult, Participant
 
@@ -257,10 +258,33 @@ def build_leaderboard_rows(
     return rows
 
 
-def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таблица") -> str:
+def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таблица", html: bool = False) -> str:
     if not rows:
         return "Таблица пока пустая."
-    lines = [title, "# | Участник | Итого | Счет | Голы | Пасы"]
+    table_lines = _leaderboard_table_lines(rows[:40])
+    if len(rows) > 40:
+        table_lines.append(f"...и еще {len(rows) - 40}")
+    if html:
+        escaped_table = "\n".join(escape(line) for line in table_lines)
+        return f"{escape(title)}\n<pre>{escaped_table}</pre>"
+    return "\n".join([title, *table_lines])
+
+
+def _leaderboard_table_lines(rows: list[dict[str, str]]) -> list[str]:
+    name_width = min(
+        24,
+        max(
+            10,
+            len("Участник"),
+            *(len(row.get("display_name") or row.get("Имя") or row.get("participant_id") or "") for row in rows),
+        ),
+    )
+    lines = [
+        (
+            f"{'#':<2} | {'Участник':<{name_width}} | "
+            f"{'Итог':>4} | {'Счет':>4} | {'Голы':>4} | {'Пасы':>4}"
+        )
+    ]
     for row in rows[:40]:
         rank = row.get("rank", "") or row.get("№", "")
         medal = {"1": "🥇", "2": "🥈", "3": "🥉"}.get(rank, f"{rank}.")
@@ -271,13 +295,14 @@ def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таб�
             goal_points = row.get("author_points", "0")
             assist_points = "0"
         total_points = row.get("total_points", "") or row.get("Итого", "0")
+        display_name = row.get("display_name") or row.get("Имя") or row.get("participant_id") or ""
+        if len(display_name) > name_width:
+            display_name = f"{display_name[: name_width - 1]}…"
         lines.append(
-            f"{medal} {row.get('display_name') or row.get('Имя') or row.get('participant_id')} — "
-            f"{total_points} | счет {score_points} | голы {goal_points} | пасы {assist_points}"
+            f"{medal:<2} | {display_name:<{name_width}} | "
+            f"{total_points:>4} | {score_points:>4} | {goal_points:>4} | {assist_points:>4}"
         )
-    if len(rows) > 40:
-        lines.append(f"...и еще {len(rows) - 40}")
-    return "\n".join(lines)
+    return lines
 
 
 def build_analytics_rows(

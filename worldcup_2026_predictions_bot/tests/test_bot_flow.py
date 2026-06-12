@@ -778,7 +778,84 @@ class BotFlowTest(unittest.TestCase):
         self.assertEqual(repo.leaderboard_rows[0]["display_name"], "Тестовый участник")
         self.assertIn("🏆 Таблица", tg.messages[-1][1])
         self.assertIn("Тестовый участник", tg.messages[-1][1])
-        self.assertIn("счет 12 | голы 4 | пасы 2", tg.messages[-1][1])
+        self.assertIn("<pre>", tg.messages[-1][1])
+        self.assertIn("|   18 |   12 |    4 |    2", tg.messages[-1][1])
+
+    def test_user_analytics_shows_recent_finished_prediction_breakdown(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m2",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        repo.results.append(
+            MatchResult(
+                match_id="m2",
+                actual_score="1-0",
+                goals=("Винисиус",),
+                assists=("Ямаль",),
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/analytics"))
+
+        message = tg.messages[-1][1]
+        self.assertIn("последние 24 часа", message)
+        self.assertIn("<b>1-0</b>", message)
+        self.assertIn("Очки: 18 = счет 12 + Г+П 6", message)
+        self.assertIn("Винисиус (1+0)", message)
+        self.assertIn("Ямаль (0+1)", message)
+        button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
+        self.assertIn("analytics:tour", button_data)
+        self.assertIn("analytics:all", button_data)
+
+    def test_user_analytics_all_includes_finished_prediction_outside_24h(self) -> None:
+        repo = FakeRepository()
+        old_kickoff = datetime.now(ZoneInfo("Europe/Moscow")) - timedelta(days=3)
+        repo.matches["old"] = Match(
+            match_id="old",
+            group="A",
+            tour="0",
+            kickoff_msk=old_kickoff,
+            deadline_msk=old_kickoff - timedelta(minutes=5),
+            team1="Бразилия",
+            team2="Испания",
+            status="open",
+        )
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="old",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        repo.results.append(MatchResult(match_id="old", actual_score="1-0", goals=("Винисиус",)))
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/analytics"))
+        self.assertNotIn("Бразилия - Испания", tg.messages[-1][1])
+
+        bot.handle_update(callback_update("analytics:all", update_id=3))
+        self.assertIn("Все ваши сыгранные прогнозы", tg.messages[-1][1])
+        self.assertIn("Бразилия - Испания", tg.messages[-1][1])
+
+    def test_user_analytics_is_private_only(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/analytics", chat_type="group", chat_id=-100))
+
+        self.assertIn("только в личке", tg.messages[-1][1])
 
     def test_admin_status_shows_missing_participants_without_predictions(self) -> None:
         repo = FakeRepository()

@@ -7,10 +7,10 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .config import Config
-from .models import Match, Participant, Player, PredictionDraft
+from .models import LatestPrediction, Match, MatchResult, Participant, Player, PredictionDraft
 from .presentation import format_prediction_for_my
 from .repository import PredictionRepository
-from .scoring import calculate_scoring, format_leaderboard
+from .scoring import author_prediction_breakdown, calculate_scoring, format_leaderboard, is_counted_result, normalize_score, score_prediction, stage_key
 from .state import DraftStore
 from .telegram_api import TelegramApi
 from .validators import (
@@ -87,7 +87,7 @@ class PredictionBot:
             return
 
         if not is_private and command not in self._group_commands():
-            if command in {"/start", "/predict", "/submit", "/authors", "/scores", "/my", "/cancel"}:
+            if command in {"/start", "/predict", "/submit", "/authors", "/scores", "/my", "/analytics", "/cancel"}:
                 self._send_private_chat_notice(chat_id)
             return
 
@@ -176,6 +176,11 @@ class PredictionBot:
                 self._send_private_chat_notice(chat_id)
                 return
             self._send_my_predictions(chat_id, participant)
+        elif command == "/analytics" or text == "Аналитика":
+            if not is_private:
+                self._send_private_chat_notice(chat_id)
+                return
+            self._send_user_analytics(chat_id, participant, "24h")
         elif command == "/publish":
             self._publish_locked(chat_id, participant, username, arg.strip(), is_private=is_private)
         elif command == "/leaderboard":
@@ -194,7 +199,7 @@ class PredictionBot:
             self._send_dashboard(
                 chat_id,
                 participant,
-                "Команда не распознана. Используйте /matches, /predict, /my, /scores, /authors или /help.\n\n"
+                "Команда не распознана. Используйте /matches, /predict, /my, /analytics, /scores, /authors или /help.\n\n"
                 "Выберите действие:",
             )
 
@@ -247,6 +252,9 @@ class PredictionBot:
         if data.startswith("dash:"):
             self._delete_message_safely(chat_id, message_id)
             self._handle_dashboard_action(chat_id, participant, data[5:])
+        elif data.startswith("analytics:"):
+            self._delete_message_safely(chat_id, message_id)
+            self._send_user_analytics(chat_id, participant, data.split(":", 1)[1])
         elif data.startswith("m:"):
             self._delete_message_safely(chat_id, message_id)
             self._start_prediction_for_match(chat_id, telegram_id, participant, data[2:])
@@ -334,6 +342,7 @@ class PredictionBot:
             "inline_keyboard": [
                 [{"text": "📝 Сделать прогноз", "callback_data": "dash:predict"}],
                 [{"text": "🔒 Мои прогнозы", "callback_data": "dash:my"}],
+                [{"text": "📊 Аналитика", "callback_data": "dash:analytics"}],
                 [
                     {"text": "🗓 Матчи", "callback_data": "dash:matches"},
                     {"text": "📘 Правила", "callback_data": "dash:rules"},
@@ -347,6 +356,8 @@ class PredictionBot:
             self._send_open_matches(chat_id, participant)
         elif action == "my":
             self._send_my_predictions(chat_id, participant)
+        elif action == "analytics":
+            self._send_user_analytics(chat_id, participant, "24h")
         elif action == "matches":
             self._send_matches(chat_id, participant)
         elif action == "rules":
@@ -924,6 +935,111 @@ class PredictionBot:
         keyboard = self._prediction_edit_keyboard(visible_latest, show_all_button=not show_all and len(active_latest) > len(visible_latest))
         self.telegram.send_message(chat_id, "\n".join(lines), keyboard)
 
+    def _send_user_analytics(self, chat_id: int, participant: Participant, mode: str = "24h") -> None:
+        entries = self._user_analytics_entries(participant, mode)
+        title = self._user_analytics_title(mode)
+        keyboard = self._user_analytics_keyboard()
+        if not entries:
+            self.telegram.send_message(
+                chat_id,
+                f"{title}\n\nПока нет ваших прогнозов на завершенные матчи в этом периоде.",
+                keyboard,
+            )
+            return
+
+        lines = [title]
+        for prediction, match, result in entries:
+            stage = stage_key(match)
+            score_points, _ = score_prediction(prediction, result, stage)
+            author_score = author_prediction_breakdown(prediction, result, stage)
+            total_points = score_points + author_score.total_points
+            lines.extend(
+                [
+                    "",
+                    f"⚽ <b>{esc(match.team1)} - {esc(match.team2)}</b> ({esc(match.match_id)})",
+                    (
+                        f"Факт: {esc(normalize_score(result.actual_score))} | "
+                        f"Очки: {total_points} = счет {score_points} + Г+П {author_score.total_points}"
+                    ),
+                    f"Счета: {self._analytics_scores(prediction, result)}",
+                    f"Игроки: {self._analytics_author_line(prediction.author_team1, result)}, "
+                    f"{self._analytics_author_line(prediction.author_team2, result)}",
+                ]
+            )
+        self.telegram.send_message(chat_id, "\n".join(lines), keyboard, parse_mode="HTML")
+
+    def _user_analytics_entries(
+        self,
+        participant: Participant,
+        mode: str,
+    ) -> list[tuple[LatestPrediction, Match, MatchResult]]:
+        now = self._now()
+        predictions = self.repository.get_latest_for_participant(participant.participant_id)
+        match_by_id = {match.match_id: match for match in self.repository.get_matches()}
+        result_by_id = {
+            result.match_id: result
+            for result in self.repository.get_results()
+            if is_counted_result(result)
+        }
+        latest_tour = self._latest_counted_tour(match_by_id, result_by_id, now)
+        entries: list[tuple[LatestPrediction, Match, MatchResult]] = []
+        for prediction in predictions:
+            match = match_by_id.get(prediction.match_id)
+            result = result_by_id.get(prediction.match_id)
+            if not match or not result or match.kickoff_msk > now:
+                continue
+            if mode == "24h" and not (now - timedelta(hours=24) <= match.kickoff_msk <= now):
+                continue
+            if mode == "tour" and match.tour != latest_tour:
+                continue
+            entries.append((prediction, match, result))
+        return sorted(entries, key=lambda item: item[1].kickoff_msk)
+
+    def _latest_counted_tour(
+        self,
+        match_by_id: dict[str, Match],
+        result_by_id: dict[str, MatchResult],
+        now: datetime,
+    ) -> str:
+        matches = [
+            match
+            for match_id, match in match_by_id.items()
+            if match_id in result_by_id and match.kickoff_msk <= now
+        ]
+        if not matches:
+            return ""
+        return max(matches, key=lambda match: match.kickoff_msk).tour
+
+    def _user_analytics_title(self, mode: str) -> str:
+        if mode == "tour":
+            return "📊 Ваши сыгранные прогнозы за последний тур"
+        if mode == "all":
+            return "📊 Все ваши сыгранные прогнозы"
+        return "📊 Ваши сыгранные прогнозы за последние 24 часа"
+
+    def _user_analytics_keyboard(self) -> dict[str, list[list[dict[str, str]]]]:
+        rows = [
+            [{"text": "Последние 24 часа", "callback_data": "analytics:24h"}],
+            [{"text": "Весь последний тур", "callback_data": "analytics:tour"}],
+            [{"text": "Все прошедшие матчи", "callback_data": "analytics:all"}],
+        ]
+        rows.extend(self._dashboard_keyboard()["inline_keyboard"])
+        return {"inline_keyboard": rows}
+
+    def _analytics_scores(self, prediction: LatestPrediction, result: MatchResult) -> str:
+        actual_score = normalize_score(result.actual_score)
+        parts = []
+        for score in prediction.scores:
+            normalized = normalize_score(score)
+            escaped_score = esc(normalized)
+            parts.append(f"<b>{escaped_score}</b>" if normalized == actual_score else escaped_score)
+        return ", ".join(parts)
+
+    def _analytics_author_line(self, author: str, result: MatchResult) -> str:
+        goals = max(0, Counter(result.goals)[author] - Counter(result.own_goals)[author])
+        assists = Counter(result.assists)[author]
+        return f"{esc(author)} ({goals}+{assists})"
+
     def _send_prediction_edit_picker(self, chat_id: int, participant: Participant, action: str, show_all: bool = False) -> None:
         active_latest = self._active_latest_predictions(participant)
         if not active_latest:
@@ -1066,7 +1182,11 @@ class PredictionBot:
             return
         target_chat_id = self._broadcast_target_chat_id(chat_id, is_private=is_private)
         try:
-            self.telegram.send_message(target_chat_id, format_leaderboard(rows, title="🏆 Таблица после игрового дня"))
+            self.telegram.send_message(
+                target_chat_id,
+                format_leaderboard(rows, title="🏆 Таблица после игрового дня", html=True),
+                parse_mode="HTML",
+            )
         except RuntimeError as error:
             self.telegram.send_message(chat_id, self._broadcast_send_error(str(error), is_private=is_private))
 
@@ -1117,7 +1237,8 @@ class PredictionBot:
             f"Матчей с результатами: {len(result.match_ids)}\n"
             f"Строк scoring: {len(result.scoring_rows)}\n"
             f"Аналитика: {len(result.analytics_rows)} листов\n\n"
-            f"{format_leaderboard(result.leaderboard_rows)}",
+            f"{format_leaderboard(result.leaderboard_rows, html=True)}",
+            parse_mode="HTML",
         )
 
     def _send_match_status(self, chat_id: int, participant: Participant, username: str, match_id: str) -> None:
@@ -1378,6 +1499,7 @@ class PredictionBot:
             "🎮 /matches - ближайшие матчи и MATCH_ID\n"
             "📝 /predict - сделать или изменить прогноз\n"
             "🔒 /my - мои прогнозы\n"
+            "📊 /analytics - разбор сыгранных прогнозов\n"
             "⚡ /submit MATCH_ID ... - быстрое сохранение\n"
             "✏️ /scores - выбрать прогноз кнопкой и заменить счета\n"
             "🧩 /authors - выбрать прогноз кнопкой и заменить авторов\n"
@@ -1590,6 +1712,7 @@ class PredictionBot:
             "/authors",
             "/scores",
             "/my",
+            "/analytics",
             "/help",
             "/rules",
             "/publish",
@@ -1616,7 +1739,7 @@ class PredictionBot:
         self.telegram.send_message(
             chat_id,
             "Прогнозы принимаются только в личке боту, чтобы участники не видели ставки друг друга. "
-            "Откройте @tii_wc_predictions_2026_bot и отправьте /predict, /submit, /scores или /authors там.",
+            "Откройте @tii_wc_predictions_2026_bot и отправьте /predict, /submit, /scores, /authors или /analytics там.",
         )
 
     def _delete_message_safely(self, chat_id: int | str | None, message_id: int | str | None) -> None:

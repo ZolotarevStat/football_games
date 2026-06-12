@@ -42,6 +42,53 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(result.leaderboard_rows[0]["display_name"], "Игрок 1")
         self.assertIn("Игрок 1", format_leaderboard(result.leaderboard_rows))
 
+    def test_format_leaderboard_renders_aligned_html_table(self) -> None:
+        message = format_leaderboard(
+            [
+                {
+                    "rank": "1",
+                    "display_name": "Димас Берг",
+                    "total_points": "16",
+                    "score_points": "12",
+                    "goal_points": "4",
+                    "assist_points": "0",
+                },
+                {
+                    "rank": "1",
+                    "display_name": "КД",
+                    "total_points": "16",
+                    "score_points": "12",
+                    "goal_points": "4",
+                    "assist_points": "0",
+                },
+            ],
+            html=True,
+        )
+
+        self.assertIn("<pre>", message)
+        table = message.split("<pre>", 1)[1].split("</pre>", 1)[0]
+        lines = table.splitlines()
+        self.assertEqual([index for index, char in enumerate(lines[0]) if char == "|"], [index for index, char in enumerate(lines[1]) if char == "|"])
+        self.assertEqual([index for index, char in enumerate(lines[0]) if char == "|"], [index for index, char in enumerate(lines[2]) if char == "|"])
+
+    def test_format_leaderboard_escapes_html_names(self) -> None:
+        message = format_leaderboard(
+            [
+                {
+                    "rank": "1",
+                    "display_name": "A&B <test>",
+                    "total_points": "16",
+                    "score_points": "12",
+                    "goal_points": "4",
+                    "assist_points": "0",
+                }
+            ],
+            html=True,
+        )
+
+        self.assertIn("A&amp;B &lt;test&gt;", message)
+        self.assertNotIn("A&B <test>", message)
+
     def test_own_goal_does_not_score_author_points(self) -> None:
         result = calculate_scoring(
             predictions=[
