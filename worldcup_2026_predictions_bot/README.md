@@ -105,6 +105,7 @@ Admin:
 - `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
 - `/score` opens a button picker for matches with filled results.
 - `/score` updates `scoring`, `leaderboard`, metric leaderboards, author-pick analytics, and first-score belief analytics.
+- `leaderboard` is written as a compact Google Sheets view with Russian headers, refreshed filter range, centered cells, content-based column widths, and green highlights for metric leaders.
 - `/leaderboard` publishes `leaderboard` sheet if it is filled.
 - Daily notifications are sent at 12:00 MSK to users who have already submitted at least one prediction when there are open matches in the next 24 hours.
 

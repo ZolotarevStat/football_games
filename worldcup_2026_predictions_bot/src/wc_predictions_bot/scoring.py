@@ -217,11 +217,23 @@ def build_leaderboard_rows(
             rank = index
             previous_points = totals["total_points"]
         participant = participant_by_id.get(participant_id)
+        display_name = participant.display_name if participant else participant_id
+        playoff_points = sum(
+            totals[field]
+            for field in (
+                "final_points",
+                "third_place_points",
+                "semifinal_points",
+                "quarterfinal_points",
+                "round16_points",
+                "round32_points",
+            )
+        )
         rows.append(
             {
                 "rank": str(rank),
                 "participant_id": participant_id,
-                "display_name": participant.display_name if participant else participant_id,
+                "display_name": display_name,
                 "matches_scored": str(totals["matches_scored"]),
                 "score_points": str(totals["score_points"]),
                 "goal_points": str(totals["goal_points"]),
@@ -231,6 +243,15 @@ def build_leaderboard_rows(
                 "total_points": str(totals["total_points"]),
                 **{field: str(totals[field]) for field in TIEBREAKER_FIELDS},
                 "updated_at": now_iso,
+                "№": str(rank),
+                "Имя": display_name,
+                "№ матчей": str(totals["matches_scored"]),
+                "Счёт": str(totals["score_points"]),
+                "Голы": str(totals["goal_points"]),
+                "Ассисты": str(totals["assist_points"]),
+                "Итого": str(totals["total_points"]),
+                "Группа": str(totals["group_points"]),
+                "Плей-офф": str(playoff_points),
             }
         )
     return rows
@@ -241,17 +262,17 @@ def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таб�
         return "Таблица пока пустая."
     lines = [title, "# | Участник | Итого | Счет | Голы | Пасы"]
     for row in rows[:40]:
-        rank = row.get("rank", "")
+        rank = row.get("rank", "") or row.get("№", "")
         medal = {"1": "🥇", "2": "🥈", "3": "🥉"}.get(rank, f"{rank}.")
-        score_points = row.get("score_points", "0")
-        goal_points = row.get("goal_points", "")
-        assist_points = row.get("assist_points", "")
+        score_points = row.get("score_points", "") or row.get("Счёт", "0")
+        goal_points = row.get("goal_points", "") or row.get("Голы", "")
+        assist_points = row.get("assist_points", "") or row.get("Ассисты", "")
         if not goal_points and not assist_points:
             goal_points = row.get("author_points", "0")
             assist_points = "0"
-        total_points = row.get("total_points", "0")
+        total_points = row.get("total_points", "") or row.get("Итого", "0")
         lines.append(
-            f"{medal} {row.get('display_name') or row.get('participant_id')} — "
+            f"{medal} {row.get('display_name') or row.get('Имя') or row.get('participant_id')} — "
             f"{total_points} | счет {score_points} | голы {goal_points} | пасы {assist_points}"
         )
     if len(rows) > 40:

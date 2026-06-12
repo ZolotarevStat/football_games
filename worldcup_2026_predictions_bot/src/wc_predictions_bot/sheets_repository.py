@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import time
 import uuid
 from datetime import datetime
@@ -11,6 +12,8 @@ from typing import Any
 from .models import LatestPrediction, Match, MatchResult, Participant, Player
 from .repository import PredictionRepository
 from .sheet_schema import SHEET_HEADERS
+
+LOG = logging.getLogger(__name__)
 
 
 class SheetsRepository(PredictionRepository):
@@ -28,6 +31,7 @@ class SheetsRepository(PredictionRepository):
         self.cache_ttl_seconds = cache_ttl_seconds
         self._service: Any | None = None
         self._cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
+        self._sheet_id_cache: dict[str, int] = {}
 
     @property
     def service(self) -> Any:
@@ -87,6 +91,7 @@ class SheetsRepository(PredictionRepository):
             insertDataOption="INSERT_ROWS",
             body={"values": values},
         ).execute()
+        self._refresh_filter_for_current_values(sheet_name)
         self._clear_cache(sheet_name)
 
     def _update_row(self, sheet_name: str, one_based_row: int, row: dict[str, str]) -> None:
@@ -99,6 +104,7 @@ class SheetsRepository(PredictionRepository):
             valueInputOption="USER_ENTERED",
             body={"values": values},
         ).execute()
+        self._refresh_filter_for_current_values(sheet_name)
         self._clear_cache(sheet_name)
 
     def _replace_dict_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> None:
@@ -112,7 +118,187 @@ class SheetsRepository(PredictionRepository):
             valueInputOption="USER_ENTERED",
             body={"values": values},
         ).execute()
+        self._set_basic_filter(sheet_name, row_count=len(values), col_count=len(headers))
+        if sheet_name == "leaderboard":
+            self._format_leaderboard_sheet(headers, values)
         self._clear_cache(sheet_name)
+
+    def _refresh_filter_for_current_values(self, sheet_name: str) -> None:
+        try:
+            values = self._values().get(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:Z").execute().get("values", [])
+            row_count = max(1, len(values))
+            col_count = len(SHEET_HEADERS[sheet_name])
+            self._set_basic_filter(sheet_name, row_count=row_count, col_count=col_count)
+        except Exception:
+            LOG.exception("Failed to refresh Google Sheets filter for sheet=%s", sheet_name)
+
+    def _set_basic_filter(self, sheet_name: str, *, row_count: int, col_count: int) -> None:
+        try:
+            sheet_id = self._sheet_id(sheet_name)
+            if sheet_id is None:
+                return
+            row_count = max(1, row_count)
+            col_count = max(1, col_count)
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={
+                    "requests": [
+                        {"clearBasicFilter": {"sheetId": sheet_id}},
+                        {
+                            "setBasicFilter": {
+                                "filter": {
+                                    "range": {
+                                        "sheetId": sheet_id,
+                                        "startRowIndex": 0,
+                                        "endRowIndex": row_count,
+                                        "startColumnIndex": 0,
+                                        "endColumnIndex": col_count,
+                                    }
+                                }
+                            }
+                        },
+                    ]
+                },
+            ).execute()
+        except Exception:
+            LOG.exception("Failed to set Google Sheets filter for sheet=%s", sheet_name)
+
+    def _sheet_id(self, sheet_name: str) -> int | None:
+        cached = self._sheet_id_cache.get(sheet_name)
+        if cached is not None:
+            return cached
+        spreadsheet = self.service.spreadsheets().get(
+            spreadsheetId=self.spreadsheet_id,
+            fields="sheets(properties(sheetId,title))",
+        ).execute()
+        for sheet in spreadsheet.get("sheets", []):
+            properties = sheet.get("properties", {})
+            if properties.get("title") == sheet_name:
+                sheet_id = int(properties["sheetId"])
+                self._sheet_id_cache[sheet_name] = sheet_id
+                return sheet_id
+        LOG.warning("Sheet id not found for sheet=%s", sheet_name)
+        return None
+
+    def _format_leaderboard_sheet(self, headers: list[str], values: list[list[str]]) -> None:
+        try:
+            sheet_id = self._sheet_id("leaderboard")
+            if sheet_id is None:
+                return
+            row_count = max(1, len(values))
+            col_count = len(headers)
+            requests: list[dict[str, Any]] = [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": row_count,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": col_count,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "horizontalAlignment": "CENTER",
+                                "verticalAlignment": "MIDDLE",
+                                "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                            }
+                        },
+                        "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,backgroundColor)",
+                    }
+                },
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": 1,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": col_count,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "textFormat": {"bold": True},
+                                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                            }
+                        },
+                        "fields": "userEnteredFormat(textFormat,backgroundColor)",
+                    }
+                },
+            ]
+            for column_index, pixel_size in enumerate(self._leaderboard_column_pixel_sizes(values)):
+                requests.append(
+                    {
+                        "updateDimensionProperties": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "dimension": "COLUMNS",
+                                "startIndex": column_index,
+                                "endIndex": column_index + 1,
+                            },
+                            "properties": {"pixelSize": pixel_size},
+                            "fields": "pixelSize",
+                        }
+                    }
+                )
+            for row_index, column_index in self._leader_cells(headers, values):
+                requests.append(
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": row_index,
+                                "endRowIndex": row_index + 1,
+                                "startColumnIndex": column_index,
+                                "endColumnIndex": column_index + 1,
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": {"red": 0.72, "green": 0.9, "blue": 0.72}
+                                }
+                            },
+                            "fields": "userEnteredFormat.backgroundColor",
+                        }
+                    }
+                )
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={"requests": requests},
+            ).execute()
+        except Exception:
+            LOG.exception("Failed to format leaderboard sheet")
+
+    def _leaderboard_column_pixel_sizes(self, values: list[list[str]]) -> list[int]:
+        if not values:
+            return []
+        col_count = max(len(row) for row in values)
+        sizes = []
+        for column_index in range(col_count):
+            max_chars = max(len(str(row[column_index])) if column_index < len(row) else 0 for row in values)
+            sizes.append(max(60, min(260, max_chars * 9 + 24)))
+        return sizes
+
+    def _leader_cells(self, headers: list[str], values: list[list[str]]) -> list[tuple[int, int]]:
+        leader_columns = {"№ матчей", "Счёт", "Голы", "Ассисты", "Итого", "Группа", "Плей-офф"}
+        cells: list[tuple[int, int]] = []
+        for column_index, header in enumerate(headers):
+            if header not in leader_columns:
+                continue
+            numeric_values: list[tuple[int, int]] = []
+            for row_index, row in enumerate(values[1:], start=1):
+                if column_index >= len(row):
+                    continue
+                try:
+                    numeric_values.append((row_index, int(str(row[column_index]).strip() or "0")))
+                except ValueError:
+                    continue
+            if not numeric_values:
+                continue
+            max_value = max(value for _, value in numeric_values)
+            if max_value <= 0:
+                continue
+            cells.extend((row_index, column_index) for row_index, value in numeric_values if value == max_value)
+        return cells
 
     def get_participant_by_telegram_id(self, telegram_id: str) -> Participant | None:
         for row in self._read_sheet("participants", use_cache=False):
