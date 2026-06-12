@@ -779,7 +779,7 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("🏆 Таблица", tg.messages[-1][1])
         self.assertIn("Тестовый участник", tg.messages[-1][1])
         self.assertIn("<pre>", tg.messages[-1][1])
-        self.assertIn("|   18 |   12 |    4 |    2", tg.messages[-1][1])
+        self.assertIn("| 18 | 12 | 4  | 2  ", tg.messages[-1][1])
 
     def test_user_analytics_shows_recent_finished_prediction_breakdown(self) -> None:
         repo = FakeRepository()

@@ -271,8 +271,12 @@ def format_leaderboard(rows: list[dict[str, str]], *, title: str = "🏆 Таб�
 
 
 def _leaderboard_table_lines(rows: list[dict[str, str]]) -> list[str]:
+    rank_width = max(
+        2,
+        *(len({"1": "🥇", "2": "🥈", "3": "🥉"}.get(row.get("rank", "") or row.get("№", ""), f"{row.get('rank', '') or row.get('№', '')}.")) for row in rows),
+    )
     name_width = min(
-        24,
+        18,
         max(
             10,
             len("Участник"),
@@ -281,8 +285,8 @@ def _leaderboard_table_lines(rows: list[dict[str, str]]) -> list[str]:
     )
     lines = [
         (
-            f"{'#':<2} | {'Участник':<{name_width}} | "
-            f"{'Итог':>4} | {'Счет':>4} | {'Голы':>4} | {'Пасы':>4}"
+            f"{'#':<{rank_width}} | {'Участник':<{name_width}} |"
+            f"{'Итог':^4}|{'Счет':^4}|{'Голы':^4}|{'Пасы':^4}"
         )
     ]
     for row in rows[:40]:
@@ -299,8 +303,8 @@ def _leaderboard_table_lines(rows: list[dict[str, str]]) -> list[str]:
         if len(display_name) > name_width:
             display_name = f"{display_name[: name_width - 1]}…"
         lines.append(
-            f"{medal:<2} | {display_name:<{name_width}} | "
-            f"{total_points:>4} | {score_points:>4} | {goal_points:>4} | {assist_points:>4}"
+            f"{medal:<{rank_width}} | {display_name:<{name_width}} |"
+            f"{total_points:^4}|{score_points:^4}|{goal_points:^4}|{assist_points:^4}"
         )
     return lines
 
