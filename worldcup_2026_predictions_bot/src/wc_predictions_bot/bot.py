@@ -47,6 +47,20 @@ class PredictionBot:
                 self._handle_callback(update["callback_query"], update.get("update_id", ""))
             elif "message" in update:
                 self._handle_message(update["message"], update.get("update_id", ""))
+        except GoogleSheetsQuotaExceededError:
+            LOG.exception("Update handling failed due to Google Sheets quota")
+            message = update.get("message") or update.get("callback_query", {}).get("message") or {}
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id:
+                try:
+                    self.telegram.send_message(
+                        chat_id,
+                        "Не смог обработать запрос из-за переполнения квоты запросов к Google Sheets. "
+                        "Если вы меняли прогноз и бот прислал сообщение с деталями, перешлите его организатору. "
+                        "Если деталей нет, повторите через 60-90 секунд.",
+                    )
+                except Exception:
+                    LOG.exception("Failed to send quota fallback error message")
         except Exception:
             LOG.exception("Update handling failed")
             message = update.get("message") or update.get("callback_query", {}).get("message") or {}
@@ -678,6 +692,18 @@ class PredictionBot:
             latest = self.repository.get_latest_for_participant(draft.participant_id)
             ensure_author_not_used(draft.author_team1, latest, draft.match_id)
             ensure_author_not_used(draft.author_team2, latest, draft.match_id)
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="сохранить или изменить прогноз",
+                    match=match,
+                    scores=draft.scores,
+                    author_team1=draft.author_team1,
+                    author_team2=draft.author_team2,
+                ),
+            )
+            return
         except ValidationError as error:
             self.telegram.send_message(chat_id, str(error))
             return
@@ -753,6 +779,18 @@ class PredictionBot:
             latest = self.repository.get_latest_for_participant(participant.participant_id)
             ensure_author_not_used(author_team1, latest, match.match_id)
             ensure_author_not_used(author_team2, latest, match.match_id)
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="быстро сохранить прогноз",
+                    match=match,
+                    scores=scores,
+                    author_team1=author_team1,
+                    author_team2=author_team2,
+                ),
+            )
+            return
         except ValidationError as error:
             self.telegram.send_message(chat_id, str(error))
             return
@@ -828,7 +866,20 @@ class PredictionBot:
             self.telegram.send_message(chat_id, "Матч не найден. Используйте /predict, чтобы увидеть MATCH_ID.")
             return
 
-        latest = self.repository.get_latest_for_participant(participant.participant_id)
+        try:
+            latest = self.repository.get_latest_for_participant(participant.participant_id)
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="изменить авторов",
+                    match=match,
+                    scores=("не удалось прочитать текущие счета из-за квоты",),
+                    author_team1=author_team1,
+                    author_team2=author_team2,
+                ),
+            )
+            return
         prediction = next((item for item in latest if item.match_id == match.match_id), None)
         if not prediction:
             self.telegram.send_message(chat_id, "Для этого матча еще нет прогноза. Сначала сохраните его через /predict или /submit.")
@@ -909,7 +960,21 @@ class PredictionBot:
             self.telegram.send_message(chat_id, "Матч не найден. Используйте /matches, чтобы увидеть MATCH_ID.")
             return
 
-        latest = self.repository.get_latest_for_participant(participant.participant_id)
+        try:
+            latest = self.repository.get_latest_for_participant(participant.participant_id)
+        except GoogleSheetsQuotaExceededError:
+            scores_preview = parse_scores(scores_text)
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="изменить счета",
+                    match=match,
+                    scores=scores_preview,
+                    author_team1="не удалось прочитать текущего автора из-за квоты",
+                    author_team2="не удалось прочитать текущего автора из-за квоты",
+                ),
+            )
+            return
         prediction = next((item for item in latest if item.match_id == match.match_id), None)
         if not prediction:
             self.telegram.send_message(chat_id, "Для этого матча еще нет прогноза. Сначала сохраните его через /predict или /submit.")
