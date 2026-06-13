@@ -231,11 +231,54 @@ class ScoringTest(unittest.TestCase):
         self.assertIn("leaderboard_by_score", result.analytics_rows)
         self.assertIn("match_author_picks", result.analytics_rows)
         self.assertIn("match_first_score_belief", result.analytics_rows)
+        self.assertIn("leaderboard_by_game_day", result.analytics_rows)
+        self.assertIn("leaderboard_by_tour", result.analytics_rows)
         author_rows = result.analytics_rows["match_author_picks"]
         self.assertEqual(author_rows[0]["player_name"], "Игрок A")
         self.assertEqual(author_rows[0]["pick_count"], "2")
         belief_rows = result.analytics_rows["match_first_score_belief"]
         self.assertEqual(belief_rows[0]["match_name"], "Команда A - Команда B")
+        game_day_rows = result.analytics_rows["leaderboard_by_game_day"]
+        self.assertEqual(game_day_rows[0]["2026-06-12"], "18")
+        tour_rows = result.analytics_rows["leaderboard_by_tour"]
+        self.assertEqual(tour_rows[0]["Группа 1"], "18")
+
+    def test_game_day_uses_noon_boundary(self) -> None:
+        result = calculate_scoring(
+            predictions=[
+                LatestPrediction("p1", "late", ("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"), "", ""),
+                LatestPrediction("p1", "early", ("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"), "", ""),
+            ],
+            results=[
+                MatchResult(match_id="late", actual_score="1-0"),
+                MatchResult(match_id="early", actual_score="1-0"),
+            ],
+            participants=[Participant(participant_id="p1", display_name="Игрок 1")],
+            matches=[
+                Match(
+                    match_id="late",
+                    group="A",
+                    tour="1",
+                    kickoff_msk=datetime(2026, 6, 12, 23, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+                    deadline_msk=datetime(2026, 6, 12, 22, 55, tzinfo=ZoneInfo("Europe/Moscow")),
+                    team1="A",
+                    team2="B",
+                ),
+                Match(
+                    match_id="early",
+                    group="A",
+                    tour="1",
+                    kickoff_msk=datetime(2026, 6, 13, 11, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+                    deadline_msk=datetime(2026, 6, 13, 10, 55, tzinfo=ZoneInfo("Europe/Moscow")),
+                    team1="C",
+                    team2="D",
+                ),
+            ],
+            now_iso="2026-06-13T12:00:00+03:00",
+        )
+
+        game_day_rows = result.analytics_rows["leaderboard_by_game_day"]
+        self.assertEqual(game_day_rows[0]["2026-06-12"], "24")
 
     def test_leaderboard_tie_breaks_by_later_stage_points(self) -> None:
         result = calculate_scoring(

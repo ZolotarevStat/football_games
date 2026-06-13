@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
+from typing import Any
 
 from .models import LatestPrediction, Match, MatchResult, Participant
 
@@ -136,6 +137,7 @@ def calculate_scoring(
         match_by_id=match_by_id,
         participant_by_id=participant_by_id,
         leaderboard_rows=leaderboard_rows,
+        scoring_rows=scoring_rows,
         now_iso=now_iso,
     )
     return ScoringResult(
@@ -316,6 +318,7 @@ def build_analytics_rows(
     match_by_id: dict[str, Match],
     participant_by_id: dict[str, Participant],
     leaderboard_rows: list[dict[str, str]],
+    scoring_rows: list[dict[str, str]],
     now_iso: str,
 ) -> dict[str, list[dict[str, str]]]:
     counted_predictions = [
@@ -330,6 +333,8 @@ def build_analytics_rows(
         "leaderboard_by_assists": build_metric_leaderboard_rows(leaderboard_rows, "assist_points", now_iso),
         "match_author_picks": build_match_author_pick_rows(counted_predictions, match_by_id, participant_by_id, now_iso),
         "match_first_score_belief": build_first_score_belief_rows(counted_predictions, match_by_id, participant_by_id, now_iso),
+        "leaderboard_by_game_day": build_points_by_game_day_rows(scoring_rows, match_by_id),
+        "leaderboard_by_tour": build_points_by_tour_rows(scoring_rows, match_by_id),
     }
 
 
@@ -438,6 +443,101 @@ def build_first_score_belief_rows(
             }
         )
     return rows
+
+
+def build_points_by_game_day_rows(
+    scoring_rows: list[dict[str, str]],
+    match_by_id: dict[str, Match],
+) -> list[dict[str, str]]:
+    day_columns = sorted(
+        {
+            game_day_label(match_by_id[row.get("match_id", "")])
+            for row in scoring_rows
+            if row.get("match_id", "") in match_by_id
+        }
+    )
+    return build_points_matrix_rows(scoring_rows, match_by_id, day_columns, lambda match: game_day_label(match))
+
+
+def build_points_by_tour_rows(
+    scoring_rows: list[dict[str, str]],
+    match_by_id: dict[str, Match],
+) -> list[dict[str, str]]:
+    labels_by_match_id = {
+        row.get("match_id", ""): tour_label(match_by_id[row.get("match_id", "")])
+        for row in scoring_rows
+        if row.get("match_id", "") in match_by_id
+    }
+    tour_columns = sorted(set(labels_by_match_id.values()), key=tour_sort_key)
+    return build_points_matrix_rows(scoring_rows, match_by_id, tour_columns, lambda match: tour_label(match))
+
+
+def build_points_matrix_rows(
+    scoring_rows: list[dict[str, str]],
+    match_by_id: dict[str, Match],
+    columns: list[str],
+    column_for_match: Any,
+) -> list[dict[str, str]]:
+    totals: dict[str, dict[str, int]] = defaultdict(lambda: {column: 0 for column in columns})
+    names: dict[str, str] = {}
+    for scoring_row in scoring_rows:
+        participant_id = scoring_row.get("participant_id", "")
+        match = match_by_id.get(scoring_row.get("match_id", ""))
+        if not participant_id or not match:
+            continue
+        column = column_for_match(match)
+        if column not in totals[participant_id]:
+            totals[participant_id][column] = 0
+        totals[participant_id][column] += int(scoring_row.get("total_points", "0") or 0)
+        names[participant_id] = scoring_row.get("display_name", "") or participant_id
+
+    rows: list[dict[str, str]] = []
+    for participant_id, participant_totals in sorted(
+        totals.items(),
+        key=lambda item: (-sum(item[1].values()), names.get(item[0], item[0])),
+    ):
+        rows.append(
+            {
+                "participant_id": participant_id,
+                "display_name": names.get(participant_id, participant_id),
+                **{column: str(participant_totals.get(column, 0)) for column in columns},
+            }
+        )
+    return rows
+
+
+def game_day_label(match: Match) -> str:
+    return (match.kickoff_msk - timedelta(hours=12)).date().isoformat()
+
+
+def tour_label(match: Match) -> str:
+    stage = stage_key(match)
+    if stage in {"final", "third_place"}:
+        return "Финал+3 место"
+    labels = {
+        "semifinal": "1/2",
+        "quarterfinal": "1/4",
+        "round16": "1/8",
+        "round32": "1/16",
+    }
+    if stage in labels:
+        return labels[stage]
+    tour = match.tour.strip()
+    return f"Группа {tour}" if tour else "Группа"
+
+
+def tour_sort_key(label: str) -> tuple[int, str]:
+    order = {
+        "Группа 1": 1,
+        "Группа 2": 2,
+        "Группа 3": 3,
+        "1/16": 4,
+        "1/8": 5,
+        "1/4": 6,
+        "1/2": 7,
+        "Финал+3 место": 8,
+    }
+    return (order.get(label, 99), label)
 
 
 def participant_display_name(

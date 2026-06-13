@@ -1212,34 +1212,70 @@ class PredictionBot:
             self._send_admin_match_picker(chat_id, participant, username, "score", is_private=True)
             return
         match_id = "" if arg.strip().lower() == "all" else arg.strip()
-        result = calculate_scoring(
+        all_result = calculate_scoring(
             predictions=self.repository.get_all_latest_predictions(),
             results=self.repository.get_results(),
             participants=self.repository.get_participants(),
             matches=self.repository.get_matches(),
             now_iso=self._now_iso(),
-            match_id=match_id,
         )
-        if not result.match_ids:
+        if not all_result.match_ids:
             self.telegram.send_message(chat_id, "Нет результатов для пересчета. Заполните лист results.")
             return
-        if not result.scoring_rows:
+        if not all_result.scoring_rows:
             self.telegram.send_message(chat_id, "Результаты есть, но подходящих прогнозов не найдено.")
             return
-        self.repository.replace_scoring_rows(result.scoring_rows)
-        self.repository.replace_leaderboard_rows(result.leaderboard_rows)
-        for sheet_name, rows in result.analytics_rows.items():
+        display_result = all_result
+        if match_id:
+            display_result = calculate_scoring(
+                predictions=self.repository.get_all_latest_predictions(),
+                results=self.repository.get_results(),
+                participants=self.repository.get_participants(),
+                matches=self.repository.get_matches(),
+                now_iso=self._now_iso(),
+                match_id=match_id,
+            )
+            if not display_result.match_ids:
+                self.telegram.send_message(chat_id, "По этому MATCH_ID нет заполненного результата.")
+                return
+            if not display_result.scoring_rows:
+                self.telegram.send_message(chat_id, "Результат есть, но подходящих прогнозов по этому матчу не найдено.")
+                return
+
+        self.repository.replace_scoring_rows(all_result.scoring_rows)
+        self.repository.replace_leaderboard_rows(all_result.leaderboard_rows)
+        for sheet_name, rows in all_result.analytics_rows.items():
             self.repository.replace_analytics_rows(sheet_name, rows)
         scope = "всем матчам" if not match_id else match_id
+        result_summary = "\n".join(self._match_result_summary_lines(match_id)) if match_id else ""
         self.telegram.send_message(
             chat_id,
             f"✅ Пересчет по {scope} готов.\n"
-            f"Матчей с результатами: {len(result.match_ids)}\n"
-            f"Строк scoring: {len(result.scoring_rows)}\n"
-            f"Аналитика: {len(result.analytics_rows)} листов\n\n"
-            f"{format_leaderboard(result.leaderboard_rows, html=True)}",
+            f"Матчей с результатами в таблицах: {len(all_result.match_ids)}\n"
+            f"Строк scoring: {len(all_result.scoring_rows)}\n"
+            f"Аналитика: {len(all_result.analytics_rows)} листов"
+            f"{result_summary}\n\n"
+            f"{format_leaderboard(display_result.leaderboard_rows, title='🏆 Очки по матчу' if match_id else '🏆 Таблица', html=True)}",
             parse_mode="HTML",
         )
+
+    def _match_result_summary_lines(self, match_id: str) -> list[str]:
+        match = self.repository.get_match(match_id)
+        result = next((item for item in self.repository.get_results() if item.match_id == match_id), None)
+        if not match or not result:
+            return []
+        lines = [
+            "",
+            "⚽ Результат матча",
+            f"{match.team1} - {match.team2}: {result.actual_score}",
+        ]
+        if result.goals:
+            lines.append(f"Голы: {', '.join(result.goals)}")
+        if result.assists:
+            lines.append(f"Ассисты: {', '.join(result.assists)}")
+        if result.own_goals:
+            lines.append(f"Автоголы: {', '.join(result.own_goals)}")
+        return lines
 
     def _send_match_status(self, chat_id: int, participant: Participant, username: str, match_id: str) -> None:
         if not self._is_admin(participant, username):
@@ -1374,6 +1410,27 @@ class PredictionBot:
                 self._send_match_insights(chat_id, participant, username, match_id)
             elif action == "score":
                 self._score_results(chat_id, participant, username, match_id)
+            elif action == "postmatch":
+                self._send_postmatch_summary(chat_id, participant, username, match_id, is_private=is_private)
+
+    def _send_postmatch_summary(
+        self,
+        chat_id: int,
+        participant: Participant,
+        username: str,
+        match_id: str,
+        *,
+        is_private: bool,
+    ) -> None:
+        if not self._is_admin(participant, username):
+            self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
+            return
+        target_chat_id = self._broadcast_target_chat_id(chat_id, is_private=is_private)
+        self.telegram.send_message(target_chat_id, f"🚀 Итоги матча {match_id}")
+        self._publish_locked(target_chat_id, participant, username, match_id, is_private=False)
+        self._send_match_insights(target_chat_id, participant, username, match_id)
+        self._score_results(target_chat_id, participant, username, match_id)
+        self._publish_leaderboard(target_chat_id, participant, username, is_private=False)
 
     def _send_admin_match_picker(
         self,
@@ -1389,7 +1446,7 @@ class PredictionBot:
             self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
             return
         matches = self._admin_matches_for_action(action)
-        if action == "score":
+        if action in {"score", "postmatch"}:
             result_match_ids = {result.match_id for result in self.repository.get_results()}
             if result_match_ids:
                 matches = [match for match in matches if match.match_id in result_match_ids]
@@ -1425,7 +1482,7 @@ class PredictionBot:
                 for match in sorted(self.repository.get_matches(), key=lambda item: abs((item.kickoff_msk - now).total_seconds()))
                 if match.match_id in predicted_match_ids
             ]
-        if action == "score":
+        if action in {"score", "postmatch"}:
             result_match_ids = {result.match_id for result in self.repository.get_results()}
             return [
                 match
@@ -1440,6 +1497,7 @@ class PredictionBot:
             "publish": "🔒 Выберите матч для публикации прогнозов:",
             "insights": "📊 Выберите матч для агрегатов прогнозов:",
             "score": "🧮 Выберите матч для пересчета очков:",
+            "postmatch": "🚀 Выберите матч для полного post-match отчета:",
         }
         return titles.get(action, "Выберите матч:")
 
@@ -1448,6 +1506,7 @@ class PredictionBot:
             "status": "Открытых матчей для проверки сейчас нет.",
             "publish": "Нет матчей после дедлайна с сохраненными прогнозами.",
             "insights": "Нет матчей с сохраненными прогнозами.",
+            "postmatch": "Нет матчей с результатами для post-match отчета.",
         }
         return messages.get(action, "Нет подходящих матчей.")
 
@@ -1455,6 +1514,8 @@ class PredictionBot:
         if action == "publish":
             return f"{match.team1}-{match.team2} дедлайн {match.deadline_msk:%d.%m %H:%M}"
         if action == "score":
+            return f"{match.team1}-{match.team2}"
+        if action == "postmatch":
             return f"{match.team1}-{match.team2}"
         return self._match_button(match)
 
@@ -1546,6 +1607,7 @@ class PredictionBot:
             "🧮 /score MATCH_ID — пересчитать очки по матчу\n"
             "🧮 /score all — пересчитать очки по всем заполненным результатам\n"
             "🧮 /score — выбрать матч кнопкой\n"
+            "🚀 Кнопка «Итоги матча» — одним нажатием: publish, insights, score, leaderboard\n"
             "🏆 /leaderboard — отправить таблицу лидеров в турнирный чат\n\n"
             "Результаты матчей для MVP заносим вручную в Google Sheets.",
             self._admin_keyboard(),
@@ -1619,6 +1681,7 @@ class PredictionBot:
     def _admin_keyboard(self) -> dict[str, list[list[dict[str, str]]]]:
         return {
             "inline_keyboard": [
+                [{"text": "🚀 Итоги матча", "callback_data": "admin_menu:postmatch"}],
                 [{"text": "📋 Статус по матчу", "callback_data": "admin_menu:status"}],
                 [{"text": "📊 Агрегаты прогнозов", "callback_data": "admin_menu:insights"}],
                 [{"text": "🔒 Опубликовать прогнозы", "callback_data": "admin_menu:publish"}],

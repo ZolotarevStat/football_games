@@ -171,6 +171,14 @@ SHEET_HEADERS = {
         "participants",
         "updated_at",
     ],
+    "leaderboard_by_game_day": [
+        "participant_id",
+        "display_name",
+    ],
+    "leaderboard_by_tour": [
+        "participant_id",
+        "display_name",
+    ],
     "notifications_log": [
         "notification_key",
         "notification_type",

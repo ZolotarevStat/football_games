@@ -781,6 +781,45 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("<pre>", tg.messages[-1][1])
         self.assertIn("| 18 | 12 | 4  | 2  ", tg.messages[-1][1])
 
+    def test_admin_score_for_single_match_keeps_cumulative_sheets(self) -> None:
+        repo = FakeRepository()
+        repo.latest.extend(
+            [
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="m1",
+                    scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Месси",
+                    author_team2="Мбаппе",
+                ),
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="m2",
+                    scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                    author_team1="Винисиус",
+                    author_team2="Ямаль",
+                ),
+            ]
+        )
+        repo.results.extend(
+            [
+                MatchResult(match_id="m1", actual_score="1-0", goals=("Месси",)),
+                MatchResult(match_id="m2", actual_score="1-0", goals=("Винисиус",), assists=("Ямаль",)),
+            ]
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/score m2", telegram_id=101, username="organizer_username"))
+
+        self.assertEqual(len(repo.scoring_rows), 2)
+        self.assertEqual(repo.leaderboard_rows[0]["total_points"], "34")
+        self.assertIn("Пересчет по m2", tg.messages[-1][1])
+        self.assertIn("Матчей с результатами в таблицах: 2", tg.messages[-1][1])
+        self.assertIn("Бразилия - Испания: 1-0", tg.messages[-1][1])
+        self.assertIn("🏆 Очки по матчу", tg.messages[-1][1])
+        self.assertIn("| 18 | 12 | 4  | 2  ", tg.messages[-1][1])
+
     def test_user_analytics_shows_recent_finished_prediction_breakdown(self) -> None:
         repo = FakeRepository()
         repo.latest.append(
@@ -1033,8 +1072,43 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("/insights MATCH_ID", tg.messages[-1][1])
         button_data = [button["callback_data"] for row in tg.messages[-1][2]["inline_keyboard"] for button in row]
         self.assertIn("admin_menu:status", button_data)
+        self.assertIn("admin_menu:postmatch", button_data)
         self.assertIn("admin_menu:publish", button_data)
         self.assertIn("admin_menu:score", button_data)
+
+    def test_admin_postmatch_button_sends_publish_insights_score_and_leaderboard(self) -> None:
+        repo = FakeRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m2",
+                scores=tuple(["1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"]),
+                author_team1="Винисиус",
+                author_team2="Ямаль",
+            )
+        )
+        repo.results.append(MatchResult(match_id="m2", actual_score="1-0", goals=("Винисиус",), assists=("Ямаль",)))
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(
+            callback_update(
+                "admin_action:postmatch:m2",
+                telegram_id=101,
+                username="organizer_username",
+                update_id=3,
+                chat_type="supergroup",
+                chat_id=-1001,
+            )
+        )
+
+        texts = "\n".join(message[1] for message in tg.messages)
+        self.assertIn("Итоги матча m2", texts)
+        self.assertIn("Прогнозы закрыты", texts)
+        self.assertIn("Агрегаты прогнозов: m2", texts)
+        self.assertIn("Пересчет по m2", texts)
+        self.assertIn("Таблица после игрового дня", texts)
+        self.assertIn("m2", repo.locked_matches)
 
     def test_admin_publish_without_match_id_can_publish_from_group_picker(self) -> None:
         repo = FakeRepository()

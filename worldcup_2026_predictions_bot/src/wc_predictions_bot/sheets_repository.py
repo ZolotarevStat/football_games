@@ -6,14 +6,16 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .models import LatestPrediction, Match, MatchResult, Participant, Player
 from .repository import PredictionRepository
 from .sheet_schema import SHEET_HEADERS
 
 LOG = logging.getLogger(__name__)
+SHEETS_WRITE_RETRY_DELAYS_SECONDS = (2, 5, 10)
+DYNAMIC_HEADER_SHEETS = {"leaderboard_by_game_day", "leaderboard_by_tour"}
 
 
 class SheetsRepository(PredictionRepository):
@@ -57,13 +59,36 @@ class SheetsRepository(PredictionRepository):
     def _values(self) -> Any:
         return self.service.spreadsheets().values()
 
+    def _execute(self, request: Any) -> Any:
+        for attempt, delay_seconds in enumerate((*SHEETS_WRITE_RETRY_DELAYS_SECONDS, 0)):
+            try:
+                return request.execute()
+            except Exception as error:
+                if delay_seconds <= 0 or not self._is_retryable_google_error(error):
+                    raise
+                LOG.warning(
+                    "Google Sheets request hit retryable error; retrying in %s seconds (attempt=%s)",
+                    delay_seconds,
+                    attempt + 1,
+                )
+                time.sleep(delay_seconds)
+        raise RuntimeError("unreachable")
+
+    def _is_retryable_google_error(self, error: Exception) -> bool:
+        response = getattr(error, "resp", None)
+        status = getattr(response, "status", None)
+        if status in {429, 500, 502, 503, 504}:
+            return True
+        text = str(error).lower()
+        return "quota exceeded" in text or "rate limit" in text
+
     def _read_sheet(self, sheet_name: str, use_cache: bool = True) -> list[dict[str, str]]:
         now = time.monotonic()
         cached = self._cache.get(sheet_name)
         if use_cache and cached and now - cached[0] < self.cache_ttl_seconds:
             return cached[1]
 
-        result = self._values().get(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:Z").execute()
+        result = self._execute(self._values().get(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:Z"))
         values = result.get("values", [])
         if not values:
             rows: list[dict[str, str]] = []
@@ -84,48 +109,75 @@ class SheetsRepository(PredictionRepository):
     def _append_dict(self, sheet_name: str, row: dict[str, str]) -> None:
         headers = SHEET_HEADERS[sheet_name]
         values = [[row.get(header, "") for header in headers]]
-        self._values().append(
-            spreadsheetId=self.spreadsheet_id,
-            range=f"{sheet_name}!A:Z",
-            valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
-            body={"values": values},
-        ).execute()
-        self._refresh_filter_for_current_values(sheet_name)
+        self._execute(
+            self._values().append(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"{sheet_name}!A:Z",
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body={"values": values},
+            )
+        )
         self._clear_cache(sheet_name)
 
     def _update_row(self, sheet_name: str, one_based_row: int, row: dict[str, str]) -> None:
         headers = SHEET_HEADERS[sheet_name]
         values = [[row.get(header, "") for header in headers]]
-        end_col = chr(ord("A") + len(headers) - 1)
-        self._values().update(
-            spreadsheetId=self.spreadsheet_id,
-            range=f"{sheet_name}!A{one_based_row}:{end_col}{one_based_row}",
-            valueInputOption="USER_ENTERED",
-            body={"values": values},
-        ).execute()
-        self._refresh_filter_for_current_values(sheet_name)
+        end_col = self._column_name(len(headers))
+        self._execute(
+            self._values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"{sheet_name}!A{one_based_row}:{end_col}{one_based_row}",
+                valueInputOption="USER_ENTERED",
+                body={"values": values},
+            )
+        )
         self._clear_cache(sheet_name)
 
     def _replace_dict_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> None:
-        headers = SHEET_HEADERS[sheet_name]
+        self._ensure_sheet_exists(sheet_name)
+        headers = self._headers_for_rows(sheet_name, rows)
         values = [headers, *[[row.get(header, "") for header in headers] for row in rows]]
-        end_col = chr(ord("A") + len(headers) - 1)
-        self._values().clear(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:Z").execute()
-        self._values().update(
-            spreadsheetId=self.spreadsheet_id,
-            range=f"{sheet_name}!A1:{end_col}{len(values)}",
-            valueInputOption="USER_ENTERED",
-            body={"values": values},
-        ).execute()
+        end_col = self._column_name(len(headers))
+        self._execute(self._values().clear(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:ZZ"))
+        self._execute(
+            self._values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"{sheet_name}!A1:{end_col}{len(values)}",
+                valueInputOption="USER_ENTERED",
+                body={"values": values},
+            )
+        )
         self._set_basic_filter(sheet_name, row_count=len(values), col_count=len(headers))
         if sheet_name == "leaderboard":
             self._format_leaderboard_sheet(headers, values)
         self._clear_cache(sheet_name)
 
+    def _headers_for_rows(self, sheet_name: str, rows: list[dict[str, str]]) -> list[str]:
+        headers = list(SHEET_HEADERS[sheet_name])
+        if sheet_name not in DYNAMIC_HEADER_SHEETS:
+            return headers
+        seen = set(headers)
+        for row in rows:
+            for key in row:
+                if key not in seen:
+                    headers.append(key)
+                    seen.add(key)
+        return headers
+
+    def _column_name(self, one_based_index: int) -> str:
+        if one_based_index < 1:
+            raise ValueError("Column index must be positive")
+        name = ""
+        index = one_based_index
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            name = chr(ord("A") + remainder) + name
+        return name
+
     def _refresh_filter_for_current_values(self, sheet_name: str) -> None:
         try:
-            values = self._values().get(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:Z").execute().get("values", [])
+            values = self._execute(self._values().get(spreadsheetId=self.spreadsheet_id, range=f"{sheet_name}!A:Z")).get("values", [])
             row_count = max(1, len(values))
             col_count = len(SHEET_HEADERS[sheet_name])
             self._set_basic_filter(sheet_name, row_count=row_count, col_count=col_count)
@@ -139,27 +191,29 @@ class SheetsRepository(PredictionRepository):
                 return
             row_count = max(1, row_count)
             col_count = max(1, col_count)
-            self.service.spreadsheets().batchUpdate(
-                spreadsheetId=self.spreadsheet_id,
-                body={
-                    "requests": [
-                        {"clearBasicFilter": {"sheetId": sheet_id}},
-                        {
-                            "setBasicFilter": {
-                                "filter": {
-                                    "range": {
-                                        "sheetId": sheet_id,
-                                        "startRowIndex": 0,
-                                        "endRowIndex": row_count,
-                                        "startColumnIndex": 0,
-                                        "endColumnIndex": col_count,
+            self._execute(
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={
+                        "requests": [
+                            {"clearBasicFilter": {"sheetId": sheet_id}},
+                            {
+                                "setBasicFilter": {
+                                    "filter": {
+                                        "range": {
+                                            "sheetId": sheet_id,
+                                            "startRowIndex": 0,
+                                            "endRowIndex": row_count,
+                                            "startColumnIndex": 0,
+                                            "endColumnIndex": col_count,
+                                        }
                                     }
                                 }
-                            }
-                        },
-                    ]
-                },
-            ).execute()
+                            },
+                        ]
+                    },
+                )
+            )
         except Exception:
             LOG.exception("Failed to set Google Sheets filter for sheet=%s", sheet_name)
 
@@ -167,10 +221,12 @@ class SheetsRepository(PredictionRepository):
         cached = self._sheet_id_cache.get(sheet_name)
         if cached is not None:
             return cached
-        spreadsheet = self.service.spreadsheets().get(
-            spreadsheetId=self.spreadsheet_id,
-            fields="sheets(properties(sheetId,title))",
-        ).execute()
+        spreadsheet = self._execute(
+            self.service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id,
+                fields="sheets(properties(sheetId,title))",
+            )
+        )
         for sheet in spreadsheet.get("sheets", []):
             properties = sheet.get("properties", {})
             if properties.get("title") == sheet_name:
@@ -179,6 +235,19 @@ class SheetsRepository(PredictionRepository):
                 return sheet_id
         LOG.warning("Sheet id not found for sheet=%s", sheet_name)
         return None
+
+    def _ensure_sheet_exists(self, sheet_name: str) -> None:
+        if self._sheet_id(sheet_name) is not None:
+            return
+        self._execute(
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
+            )
+        )
+        self._sheet_id_cache.clear()
+        if self._sheet_id(sheet_name) is None:
+            raise RuntimeError(f"Failed to create Google Sheet: {sheet_name}")
 
     def _format_leaderboard_sheet(self, headers: list[str], values: list[list[str]]) -> None:
         try:
@@ -261,10 +330,12 @@ class SheetsRepository(PredictionRepository):
                         }
                     }
                 )
-            self.service.spreadsheets().batchUpdate(
-                spreadsheetId=self.spreadsheet_id,
-                body={"requests": requests},
-            ).execute()
+            self._execute(
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={"requests": requests},
+                )
+            )
         except Exception:
             LOG.exception("Failed to format leaderboard sheet")
 
