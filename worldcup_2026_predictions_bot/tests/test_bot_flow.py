@@ -9,6 +9,7 @@ from wc_predictions_bot.bot import PredictionBot
 from wc_predictions_bot.config import Config
 from wc_predictions_bot.fake_repository import FakeRepository
 from wc_predictions_bot.models import LatestPrediction, Match, MatchResult, Player
+from wc_predictions_bot.sheets_repository import GoogleSheetsQuotaExceededError
 from wc_predictions_bot.telegram_api import RecordingTelegramApi
 
 
@@ -73,6 +74,11 @@ class FailingTelegramApi(RecordingTelegramApi):
         if str(chat_id) == self.failing_chat_id:
             raise RuntimeError('Telegram sendMessage failed: 400 {"description":"Bad Request: chat not found"}')
         super().send_message(chat_id, text, reply_markup, parse_mode)
+
+
+class QuotaFailingSaveRepository(FakeRepository):
+    def save_prediction(self, **kwargs):
+        raise GoogleSheetsQuotaExceededError("Quota exceeded for quota metric 'Write requests'")
 
 
 class BotFlowTest(unittest.TestCase):
@@ -748,6 +754,68 @@ class BotFlowTest(unittest.TestCase):
         self.assertEqual(repo.latest[0].scores, ("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"))
         self.assertEqual(repo.latest[0].author_team1, "Альварес")
         self.assertEqual(repo.latest[0].author_team2, "Гризманн")
+
+    def test_scores_quota_failure_returns_forwardable_requested_change(self) -> None:
+        repo = QuotaFailingSaveRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/scores m1 2-0,1-0,1-1,0-0,2-1,1-2,0-1"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Вы хотели изменить счета в матче m1", text)
+        self.assertIn("Счета: 2-0, 1-0, 1-1, 0-0, 2-1, 1-2, 0-1", text)
+        self.assertIn("Автор Аргентина: Месси", text)
+        self.assertIn("переполнения квоты запросов к Google Sheets", text)
+        self.assertIn("Перешлите это сообщение организатору", text)
+
+    def test_authors_quota_failure_returns_forwardable_requested_change(self) -> None:
+        repo = QuotaFailingSaveRepository()
+        repo.latest.append(
+            LatestPrediction(
+                participant_id="p1",
+                match_id="m1",
+                scores=("1-0", "1-1", "2-0", "0-0", "2-1", "1-2", "0-1"),
+                author_team1="Месси",
+                author_team2="Мбаппе",
+            )
+        )
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/authors m1 | Альварес | Гризманн"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Вы хотели изменить авторов в матче m1", text)
+        self.assertIn("Счета: 1-0, 1-1, 2-0, 0-0, 2-1, 1-2, 0-1", text)
+        self.assertIn("Автор Аргентина: Альварес", text)
+        self.assertIn("Автор Франция: Гризманн", text)
+
+    def test_interactive_save_quota_failure_preserves_requested_prediction(self) -> None:
+        repo = QuotaFailingSaveRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(message_update("/predict"))
+        bot.handle_update(callback_update("m:m1"))
+        bot.handle_update(message_update("1-0,1-1,2-0,0-0,2-1,1-2,0-1"))
+        bot.handle_update(callback_update("a1:m1:0"))
+        bot.handle_update(callback_update("a2:m1:0"))
+        bot.handle_update(callback_update("save:m1"))
+
+        text = tg.messages[-1][1]
+        self.assertIn("Вы хотели сохранить или изменить прогноз в матче m1", text)
+        self.assertIn("Автор Аргентина: Месси", text)
+        self.assertIn("Автор Франция: Мбаппе", text)
 
     def test_admin_score_recalculates_leaderboard(self) -> None:
         repo = FakeRepository()

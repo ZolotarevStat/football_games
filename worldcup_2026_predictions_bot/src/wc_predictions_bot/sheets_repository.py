@@ -18,6 +18,10 @@ SHEETS_WRITE_RETRY_DELAYS_SECONDS = (2, 5, 10)
 DYNAMIC_HEADER_SHEETS = {"leaderboard_by_game_day", "leaderboard_by_tour"}
 
 
+class GoogleSheetsQuotaExceededError(RuntimeError):
+    pass
+
+
 class SheetsRepository(PredictionRepository):
     def __init__(
         self,
@@ -65,6 +69,8 @@ class SheetsRepository(PredictionRepository):
                 return request.execute()
             except Exception as error:
                 if delay_seconds <= 0 or not self._is_retryable_google_error(error):
+                    if self._is_google_quota_error(error):
+                        raise GoogleSheetsQuotaExceededError(str(error)) from error
                     raise
                 LOG.warning(
                     "Google Sheets request hit retryable error; retrying in %s seconds (attempt=%s)",
@@ -81,6 +87,12 @@ class SheetsRepository(PredictionRepository):
             return True
         text = str(error).lower()
         return "quota exceeded" in text or "rate limit" in text
+
+    def _is_google_quota_error(self, error: Exception) -> bool:
+        response = getattr(error, "resp", None)
+        status = getattr(response, "status", None)
+        text = str(error).lower()
+        return status == 429 or "quota exceeded" in text or "rate limit" in text
 
     def _read_sheet(self, sheet_name: str, use_cache: bool = True) -> list[dict[str, str]]:
         now = time.monotonic()
@@ -372,13 +384,13 @@ class SheetsRepository(PredictionRepository):
         return cells
 
     def get_participant_by_telegram_id(self, telegram_id: str) -> Participant | None:
-        for row in self._read_sheet("participants", use_cache=False):
+        for row in self._read_sheet("participants"):
             if row.get("telegram_id") == telegram_id:
                 return _participant(row)
         return None
 
     def get_participants(self) -> list[Participant]:
-        return [_participant(row) for row in self._read_sheet("participants", use_cache=False)]
+        return [_participant(row) for row in self._read_sheet("participants")]
 
     def bind_participant(self, invite_code: str, telegram_id: str, username: str, bound_at: str) -> Participant | None:
         rows = self._read_sheet("participants", use_cache=False)
@@ -468,21 +480,21 @@ class SheetsRepository(PredictionRepository):
     def get_latest_for_participant(self, participant_id: str) -> list[LatestPrediction]:
         return [
             _latest(row)
-            for row in self._read_sheet("predictions_latest", use_cache=False)
+            for row in self._read_sheet("predictions_latest")
             if row.get("participant_id") == participant_id and row.get("validation_status", "valid") == "valid"
         ]
 
     def get_latest_for_match(self, match_id: str) -> list[LatestPrediction]:
         return [
             _latest(row)
-            for row in self._read_sheet("predictions_latest", use_cache=False)
+            for row in self._read_sheet("predictions_latest")
             if row.get("match_id") == match_id and row.get("validation_status", "valid") == "valid"
         ]
 
     def get_all_latest_predictions(self) -> list[LatestPrediction]:
         return [
             _latest(row)
-            for row in self._read_sheet("predictions_latest", use_cache=False)
+            for row in self._read_sheet("predictions_latest")
             if row.get("validation_status", "valid") == "valid"
         ]
 

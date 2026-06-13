@@ -11,6 +11,7 @@ from .models import LatestPrediction, Match, MatchResult, Participant, Player, P
 from .presentation import format_prediction_for_my
 from .repository import PredictionRepository
 from .scoring import author_prediction_breakdown, calculate_scoring, format_leaderboard, is_counted_result, normalize_score, score_prediction, stage_key
+from .sheets_repository import GoogleSheetsQuotaExceededError
 from .state import DraftStore
 from .telegram_api import TelegramApi
 from .validators import (
@@ -681,16 +682,29 @@ class PredictionBot:
             self.telegram.send_message(chat_id, str(error))
             return
 
-        submission_id = self.repository.save_prediction(
-            timestamp_msk=self._now_iso(),
-            telegram_id=telegram_id,
-            participant_id=draft.participant_id,
-            match_id=draft.match_id,
-            scores=draft.scores,
-            author_team1=draft.author_team1,
-            author_team2=draft.author_team2,
-            source_update_id=str(update_id),
-        )
+        try:
+            submission_id = self.repository.save_prediction(
+                timestamp_msk=self._now_iso(),
+                telegram_id=telegram_id,
+                participant_id=draft.participant_id,
+                match_id=draft.match_id,
+                scores=draft.scores,
+                author_team1=draft.author_team1,
+                author_team2=draft.author_team2,
+                source_update_id=str(update_id),
+            )
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="сохранить или изменить прогноз",
+                    match=match,
+                    scores=draft.scores,
+                    author_team1=draft.author_team1,
+                    author_team2=draft.author_team2,
+                ),
+            )
+            return
         self.drafts.clear(telegram_id)
         self._send_dashboard(chat_id, participant, f"Прогноз сохранен. ID: {submission_id[:8]}\n\nВыберите следующее действие:")
 
@@ -743,16 +757,29 @@ class PredictionBot:
             self.telegram.send_message(chat_id, str(error))
             return
 
-        submission_id = self.repository.save_prediction(
-            timestamp_msk=self._now_iso(),
-            telegram_id=telegram_id,
-            participant_id=participant.participant_id,
-            match_id=match.match_id,
-            scores=scores,
-            author_team1=author_team1,
-            author_team2=author_team2,
-            source_update_id=str(update_id),
-        )
+        try:
+            submission_id = self.repository.save_prediction(
+                timestamp_msk=self._now_iso(),
+                telegram_id=telegram_id,
+                participant_id=participant.participant_id,
+                match_id=match.match_id,
+                scores=scores,
+                author_team1=author_team1,
+                author_team2=author_team2,
+                source_update_id=str(update_id),
+            )
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="быстро сохранить прогноз",
+                    match=match,
+                    scores=scores,
+                    author_team1=author_team1,
+                    author_team2=author_team2,
+                ),
+            )
+            return
         self.drafts.clear(telegram_id)
         self._send_dashboard(
             chat_id,
@@ -832,16 +859,29 @@ class PredictionBot:
             self.telegram.send_message(chat_id, str(error))
             return
 
-        submission_id = self.repository.save_prediction(
-            timestamp_msk=self._now_iso(),
-            telegram_id=telegram_id,
-            participant_id=participant.participant_id,
-            match_id=match.match_id,
-            scores=list(prediction.scores),
-            author_team1=author_team1,
-            author_team2=author_team2,
-            source_update_id=str(update_id),
-        )
+        try:
+            submission_id = self.repository.save_prediction(
+                timestamp_msk=self._now_iso(),
+                telegram_id=telegram_id,
+                participant_id=participant.participant_id,
+                match_id=match.match_id,
+                scores=list(prediction.scores),
+                author_team1=author_team1,
+                author_team2=author_team2,
+                source_update_id=str(update_id),
+            )
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="изменить авторов",
+                    match=match,
+                    scores=list(prediction.scores),
+                    author_team1=author_team1,
+                    author_team2=author_team2,
+                ),
+            )
+            return
         self.drafts.clear(telegram_id)
         self._send_dashboard(
             chat_id,
@@ -882,16 +922,29 @@ class PredictionBot:
             self.telegram.send_message(chat_id, str(error))
             return
 
-        submission_id = self.repository.save_prediction(
-            timestamp_msk=self._now_iso(),
-            telegram_id=telegram_id,
-            participant_id=participant.participant_id,
-            match_id=match.match_id,
-            scores=scores,
-            author_team1=prediction.author_team1,
-            author_team2=prediction.author_team2,
-            source_update_id=str(update_id),
-        )
+        try:
+            submission_id = self.repository.save_prediction(
+                timestamp_msk=self._now_iso(),
+                telegram_id=telegram_id,
+                participant_id=participant.participant_id,
+                match_id=match.match_id,
+                scores=scores,
+                author_team1=prediction.author_team1,
+                author_team2=prediction.author_team2,
+                source_update_id=str(update_id),
+            )
+        except GoogleSheetsQuotaExceededError:
+            self.telegram.send_message(
+                chat_id,
+                self._quota_failure_message(
+                    action="изменить счета",
+                    match=match,
+                    scores=scores,
+                    author_team1=prediction.author_team1,
+                    author_team2=prediction.author_team2,
+                ),
+            )
+            return
         self.drafts.clear(telegram_id)
         self._send_dashboard(
             chat_id,
@@ -910,6 +963,24 @@ class PredictionBot:
             if match_id and author_team1:
                 return match_id.strip(), author_team1.strip(), parts[1]
         raise ValueError("Invalid /authors format")
+
+    def _quota_failure_message(
+        self,
+        *,
+        action: str,
+        match: Match,
+        scores: list[str] | tuple[str, ...],
+        author_team1: str,
+        author_team2: str,
+    ) -> str:
+        return (
+            f"Вы хотели {action} в матче {match.match_id} ({match.team1} - {match.team2}) на:\n"
+            f"Счета: {', '.join(scores)}\n"
+            f"Автор {match.team1}: {author_team1}\n"
+            f"Автор {match.team2}: {author_team2}\n\n"
+            "Но это не получилось записать из-за переполнения квоты запросов к Google Sheets. "
+            "Перешлите это сообщение организатору."
+        )
 
     def _send_my_predictions(self, chat_id: int, participant: Participant, show_all: bool = False) -> None:
         LOG.info("Loading latest predictions for /my")
