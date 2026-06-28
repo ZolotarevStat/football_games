@@ -131,6 +131,10 @@ class FakeRepository(PredictionRepository):
     def get_match(self, match_id: str) -> Match | None:
         return self.matches.get(match_id)
 
+    def upsert_matches(self, matches: list[Match]) -> None:
+        for match in matches:
+            self.matches[match.match_id] = match
+
     def get_players_for_match(self, match: Match) -> list[Player]:
         return sorted(
             [p for p in self.players if p.team in {match.team1, match.team2} and p.is_active],

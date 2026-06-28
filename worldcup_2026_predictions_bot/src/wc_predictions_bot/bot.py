@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import Config
 from .models import LatestPrediction, Match, MatchResult, Participant, Player, PredictionDraft
+from .playoff_calendar import build_playoff_calendar
 from .presentation import format_prediction_for_my
 from .repository import PredictionRepository
 from .scoring import author_prediction_breakdown, calculate_scoring, format_leaderboard, is_counted_result, normalize_score, score_prediction, stage_key
@@ -208,6 +209,8 @@ class PredictionBot:
             self._send_latest_match_status(chat_id, participant, username)
         elif command == "/insights":
             self._send_match_insights(chat_id, participant, username, arg.strip())
+        elif command == "/calendar":
+            self._refresh_playoff_calendar(chat_id, participant, username)
         elif command == "/admin":
             self._send_admin_help(chat_id, participant, username)
         else:
@@ -1530,6 +1533,9 @@ class PredictionBot:
             if action == "leaderboard":
                 self._publish_leaderboard(chat_id, participant, username, is_private=is_private)
                 return
+            if action == "calendar":
+                self._refresh_playoff_calendar(chat_id, participant, username)
+                return
             self._send_admin_match_picker(chat_id, participant, username, action, is_private=is_private)
             return
         if data.startswith("admin_all:"):
@@ -1548,6 +1554,24 @@ class PredictionBot:
                 self._score_results(chat_id, participant, username, match_id)
             elif action == "postmatch":
                 self._send_postmatch_summary(chat_id, participant, username, match_id, is_private=is_private)
+
+    def _refresh_playoff_calendar(self, chat_id: int, participant: Participant | None, username: str) -> None:
+        if not self._is_admin(participant, username):
+            self.telegram.send_message(chat_id, "Команда доступна только организаторам.")
+            return
+        update = build_playoff_calendar(self.repository.get_results())
+        self.repository.upsert_matches(update.matches)
+        lines = [
+            "🗓 Календарь плей-офф актуализирован.",
+            f"Матчей добавлено/обновлено: {len(update.matches)}",
+            f"Открытых пар: {update.open_match_count}",
+            f"Плановых пар без команд: {update.planned_match_count}",
+            f"Будущих пар с определенными командами: {update.resolved_future_match_count}",
+        ]
+        if update.warnings:
+            lines.extend(["", "Требуют ручной проверки:"])
+            lines.extend(f"- {warning}" for warning in update.warnings[:5])
+        self.telegram.send_message(chat_id, "\n".join(lines), self._admin_keyboard())
 
     def _send_postmatch_summary(
         self,
@@ -1701,6 +1725,7 @@ class PredictionBot:
             "✏️ /scores - выбрать прогноз кнопкой и заменить счета\n"
             "🧩 /authors - выбрать прогноз кнопкой и заменить авторов\n"
             "📘 /rules - подробные правила\n"
+            "⏱ В плей-офф считаются только основное время: счет и Г+П; экстра-тайм и серия пенальти не учитываются.\n"
             "↩️ /cancel - сбросить черновик",
             self._dashboard_keyboard() if participant else None,
         )
@@ -1718,6 +1743,8 @@ class PredictionBot:
             "🧩 /authors меняет только авторов и оставляет счета без изменений.\n"
             "🧭 Без MATCH_ID бот покажет прогнозы кнопками.\n"
             "⏰ После дедлайна новые прогнозы и правки блокируются сервером.\n"
+            "⏱ В плей-офф прогнозный счет и Г+П считаются только за основное время матча. "
+            "Дополнительные 30 минут и серия пенальти не учитываются.\n"
             "🏆 С 1/8 финала очки за счета и Г+П постепенно растут.\n"
             "📌 Источник голов и ассистов для подсчета: sports.ru.\n"
             "⚖️ При равенстве очков tie-breakers: финал, матч за 3 место, 1/2, 1/4, 1/8, 1/16, группа.\n\n"
@@ -1738,6 +1765,7 @@ class PredictionBot:
             "📋 /status_latest — кто сдал прогноз по ближайшему открытому матчу\n"
             "📊 /insights MATCH_ID — агрегаты прогнозов по матчу\n"
             "📊 /insights — выбрать матч кнопкой\n"
+            "🗓 /calendar — актуализировать календарь плей-офф по сетке\n"
             "🔒 /publish MATCH_ID — опубликовать прогнозы после дедлайна\n"
             "🔒 /publish — выбрать закрытый матч кнопкой\n"
             "🧮 /score MATCH_ID — пересчитать очки по матчу\n"
@@ -1822,6 +1850,7 @@ class PredictionBot:
                 [{"text": "📊 Агрегаты прогнозов", "callback_data": "admin_menu:insights"}],
                 [{"text": "🔒 Опубликовать прогнозы", "callback_data": "admin_menu:publish"}],
                 [{"text": "🧮 Пересчитать очки", "callback_data": "admin_menu:score"}],
+                [{"text": "🗓 Актуализировать календарь", "callback_data": "admin_menu:calendar"}],
                 [{"text": "🏆 Отправить таблицу лидеров", "callback_data": "admin_menu:leaderboard"}],
                 [{"text": CLOSE_BUTTON_TEXT, "callback_data": "close"}],
             ]
@@ -1920,6 +1949,7 @@ class PredictionBot:
             "/status",
             "/status_latest",
             "/insights",
+            "/calendar",
             "/admin",
         }
 
@@ -1931,6 +1961,7 @@ class PredictionBot:
             "/status",
             "/status_latest",
             "/insights",
+            "/calendar",
             "/admin",
         }
 

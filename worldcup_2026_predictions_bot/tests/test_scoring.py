@@ -184,6 +184,38 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(result.scoring_rows[0]["assist_points"], "3")
         self.assertEqual(result.scoring_rows[0]["author_points"], "9")
 
+    def test_round32_uses_playoff_score_points_from_rules(self) -> None:
+        result = calculate_scoring(
+            predictions=[
+                LatestPrediction(
+                    participant_id="p1",
+                    match_id="SAfCan",
+                    scores=("2-1", "1-0", "1-1", "0-0", "2-0", "1-2", "0-1"),
+                    author_team1="Игрок A",
+                    author_team2="Игрок B",
+                )
+            ],
+            results=[MatchResult(match_id="SAfCan", actual_score="2-1", goals=("Игрок A",), assists=("Игрок B",))],
+            participants=[Participant(participant_id="p1", display_name="Игрок 1")],
+            matches=[
+                Match(
+                    match_id="SAfCan",
+                    group="Плей-офф",
+                    tour="1/16",
+                    kickoff_msk=datetime(2026, 6, 28, 22, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+                    deadline_msk=datetime(2026, 6, 28, 21, 55, tzinfo=ZoneInfo("Europe/Moscow")),
+                    team1="ЮАР",
+                    team2="Канада",
+                )
+            ],
+            now_iso="2026-06-28T23:00:00+03:00",
+        )
+
+        self.assertEqual(result.scoring_rows[0]["stage"], "round32")
+        self.assertEqual(result.scoring_rows[0]["score_points"], "15")
+        self.assertEqual(result.scoring_rows[0]["goal_points"], "4")
+        self.assertEqual(result.scoring_rows[0]["assist_points"], "2")
+
     def test_builds_leaderboard_and_match_analytics_rows(self) -> None:
         result = calculate_scoring(
             predictions=[

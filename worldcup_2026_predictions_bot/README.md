@@ -79,6 +79,7 @@ Cloud Functions/webhook experiment files are archived under `legacy/cloud_functi
 - Enter 7 unique scores, comma-separated: `1-0,1-1,2-0,0-0,2-1,1-2,0-1`.
 - Choose one G+A author from team 1 active roster, sorted by G+A priority.
 - Choose one G+A author from team 2 active roster, sorted by G+A priority.
+- In playoff matches, predicted score and G+A are counted only for regular time. Extra time and penalty shootout are not included.
 - Confirm save.
 - `/my` shows up to 5 active open predictions with edit buttons; a button can show all active predictions.
 - `/help` shows rules.
@@ -124,6 +125,7 @@ Hard server-side checks:
 - selected author was not already used by the same participant in other latest predictions.
 - results with status `cancelled`, `technical`, or `void` are ignored in scoring;
 - own goals do not give author points.
+- playoff results, goals, and assists are scored only for regular time; extra time and penalty shootout are ignored.
 - scoring increases from 1/8 onward and leaderboard ties are sorted by later-stage points: final, third place, semifinal, quarterfinal, round16, round32, group.
 
 ## Smoke Tests

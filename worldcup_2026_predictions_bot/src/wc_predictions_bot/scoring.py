@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html import escape
+import re
 from typing import Any
 
 from .models import LatestPrediction, Match, MatchResult, Participant
@@ -159,7 +160,13 @@ def score_prediction(prediction: LatestPrediction, result: MatchResult, stage: s
 
 
 def is_counted_result(result: MatchResult) -> bool:
-    return bool(result.actual_score and result.status.strip().lower() in COUNTED_RESULT_STATUSES)
+    if not result.actual_score:
+        return False
+    status = result.status.strip().lower()
+    if status in COUNTED_RESULT_STATUSES:
+        return True
+    tokens = {part for part in re.split(r"[\s,;|]+", status) if part}
+    return bool(tokens & COUNTED_RESULT_STATUSES)
 
 
 def author_prediction(prediction: LatestPrediction, result: MatchResult, stage: str = "group") -> tuple[int, str]:

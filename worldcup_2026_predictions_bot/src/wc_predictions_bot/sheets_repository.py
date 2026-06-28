@@ -465,6 +465,17 @@ class SheetsRepository(PredictionRepository):
                 return _match(row)
         return None
 
+    def upsert_matches(self, matches: list[Match]) -> None:
+        rows_by_id = {
+            row.get("match_id", ""): {header: row.get(header, "") for header in SHEET_HEADERS["matches"]}
+            for row in self._read_sheet("matches", use_cache=False)
+            if row.get("match_id")
+        }
+        for match in matches:
+            rows_by_id[match.match_id] = _match_row(match)
+        rows = sorted(rows_by_id.values(), key=lambda row: row.get("kickoff_msk", ""))
+        self._replace_dict_rows("matches", rows)
+
     def get_players_for_match(self, match: Match) -> list[Player]:
         players = [_player(row) for row in self._read_sheet("players")]
         teams = {match.team1, match.team2}
@@ -664,6 +675,19 @@ def _match(row: dict[str, str]) -> Match:
         team2=row.get("team2", ""),
         status=row.get("status", "open"),
     )
+
+
+def _match_row(match: Match) -> dict[str, str]:
+    return {
+        "match_id": match.match_id,
+        "group": match.group,
+        "tour": match.tour,
+        "kickoff_msk": match.kickoff_msk.astimezone(ZoneInfo("Europe/Moscow")).isoformat(timespec="seconds"),
+        "deadline_msk": match.deadline_msk.astimezone(ZoneInfo("Europe/Moscow")).isoformat(timespec="seconds"),
+        "team1": match.team1,
+        "team2": match.team2,
+        "status": match.status,
+    }
 
 
 def _player(row: dict[str, str]) -> Player:

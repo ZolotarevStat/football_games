@@ -38,6 +38,10 @@ class PredictionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def upsert_matches(self, matches: list[Match]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_players_for_match(self, match: Match) -> list[Player]:
         raise NotImplementedError
 

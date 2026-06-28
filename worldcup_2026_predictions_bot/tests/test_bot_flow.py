@@ -1143,6 +1143,19 @@ class BotFlowTest(unittest.TestCase):
         self.assertIn("admin_menu:postmatch", button_data)
         self.assertIn("admin_menu:publish", button_data)
         self.assertIn("admin_menu:score", button_data)
+        self.assertIn("admin_menu:calendar", button_data)
+
+    def test_admin_calendar_button_upserts_playoff_matches(self) -> None:
+        repo = FakeRepository()
+        tg = RecordingTelegramApi()
+        bot = PredictionBot(make_config(), repo, tg)
+
+        bot.handle_update(callback_update("admin_menu:calendar", telegram_id=101, username="organizer_username", update_id=3))
+
+        self.assertIsNotNone(repo.get_match("SAfCan"))
+        self.assertIsNotNone(repo.get_match("M89"))
+        self.assertEqual(repo.get_match("SAfCan").team1, "ЮАР")
+        self.assertIn("Календарь плей-офф актуализирован", tg.messages[-1][1])
 
     def test_admin_postmatch_button_sends_publish_insights_score_and_leaderboard(self) -> None:
         repo = FakeRepository()
