@@ -1,48 +1,97 @@
-# Telegram Bot MVP
+# World Cup 2026 Prediction Bot
 
-Текущий внешний MVP runtime:
+A Python and Telegram application for running a prediction tournament across the complete 48-team, 104-match World Cup. The bot collects match and player predictions, validates every submission, enforces deadlines, calculates scores, and publishes leaderboards and aggregate insights.
+
+Google Sheets provides a transparent operational data layer for fixtures, participants, predictions, results, scoring, and analytical outputs.
+
+## Architecture
 
 ```text
-Always-on polling worker -> Telegram Bot API -> Google Sheets
+Telegram users
+      |
+      v
+Always-on polling worker
+      |
+      +--> validation and scoring services
+      |
+      v
+Google Sheets
 ```
 
-Durable-данные живут только в Google Sheets. В памяти хранится только короткий черновик ввода между шагами: выбор матча -> 7 счетов -> автор команды 1 -> автор команды 2 -> подтверждение.
+The active runtime is a polling worker deployed on an always-on VM. Early webhook and Cloud Functions experiments are archived under [`legacy/cloud_functions/`](./legacy/cloud_functions/) and are not part of the production path.
 
-## Нужные доступы
+## Product Capabilities
 
-Единый набор для финального e2e:
+- Guided Telegram flow for match-score and player-contribution predictions
+- Invite/PIN registration and optional username allowlists
+- Server-side validation of formats, rosters, deadlines, and repeated player selections
+- Private predictions before the deadline and controlled publication afterwards
+- Stage-aware scoring from the group phase through the final
+- Overall and metric-specific leaderboards
+- Aggregate views of player picks and first-score beliefs
+- Daily reminders for upcoming matches
+- Administrative commands for submission status, scoring, and publication
 
-- `TELEGRAM_BOT_TOKEN`
-- `GOOGLE_SPREADSHEET_ID`
-- `GOOGLE_SERVICE_ACCOUNT_JSON_B64` или `GOOGLE_SERVICE_ACCOUNT_FILE`
-- доступ service account к Google Sheet как Editor
-- `TOURNAMENT_CHAT_ID`
-- деплой-доступ: Yandex Cloud VM для polling-worker
+## Prediction Flow
 
-## Sheets Schema
+1. Register with `/start`.
+2. Review open fixtures with `/matches`.
+3. Start a prediction with `/predict`.
+4. Submit seven unique score options.
+5. Select one goal-or-assist author from each team's active roster.
+6. Confirm the prediction before the deadline.
+7. Review the latest saved prediction with `/my`.
 
-Сервис ожидает листы:
+Predictions can be edited until the match deadline. The bot keeps only short-lived draft state in memory; durable records are written to Google Sheets.
 
-- `participants`
-- `matches`
-- `players`
-- `predictions_raw`
-- `predictions_latest`
-- `results`
-- `scoring`
-- `leaderboard`
-- `leaderboard_by_total`
-- `leaderboard_by_score`
-- `leaderboard_by_goals`
-- `leaderboard_by_assists`
-- `match_author_picks`
-- `match_first_score_belief`
-- `scoring_rules`
+## Validation and Scoring
 
-Инструкция для организатора по заполнению результатов: `ORGANIZER_GUIDE.md`.
-Smoke-сценарий одного тестового матча: `SMOKE_TEST_SCENARIO.md`.
+The application checks that:
 
-Создать/обновить заголовки:
+- the participant is registered;
+- the match exists and remains open;
+- exactly seven unique scores use the expected format;
+- selected players belong to the correct active rosters;
+- the two selected players are distinct;
+- a participant does not reuse the same player across latest predictions;
+- cancelled, technical, and void results are excluded from scoring;
+- own goals do not receive player-contribution points.
+
+Points increase in the knockout rounds. Tied leaderboard positions are resolved by performance in later stages, starting with the final and moving backwards through the tournament.
+
+## Analytics Outputs
+
+Scoring updates both participant rankings and aggregate analytical views:
+
+- overall leaderboard;
+- score, goal, and assist leaderboards;
+- match-level player-pick distributions;
+- first-score belief summaries;
+- stage-level tie-break information.
+
+## Google Sheets Schema
+
+The service expects these sheets:
+
+```text
+participants
+matches
+players
+predictions_raw
+predictions_latest
+results
+scoring
+leaderboard
+leaderboard_by_total
+leaderboard_by_score
+leaderboard_by_goals
+leaderboard_by_assists
+match_author_picks
+match_first_score_belief
+scoring_rules
+```
+
+Create or update the required headers:
 
 ```bash
 python -m wc_predictions_bot.setup_sheets \
@@ -50,78 +99,48 @@ python -m wc_predictions_bot.setup_sheets \
   --service-account-file service-account.json
 ```
 
-## Local Run
+## Local Setup
+
+Requires Python 3.11 or later.
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
+
 export TELEGRAM_BOT_TOKEN=...
 export GOOGLE_SPREADSHEET_ID=...
 export GOOGLE_SERVICE_ACCOUNT_FILE=...
 export TOURNAMENT_CHAT_ID=...
-.venv/bin/python -m wc_predictions_bot.polling
-```
 
-External worker command on YC VM:
-
-```bash
 python -m wc_predictions_bot.polling
 ```
 
-Cloud Functions/webhook experiment files are archived under `legacy/cloud_functions/` and are not the active runtime path.
+The deployment runtime also accepts a base64-encoded service-account value through `GOOGLE_SERVICE_ACCOUNT_JSON_B64`.
 
-## User Flow
+Optional access settings:
 
-- `/start` -> bind by invite/PIN.
-- `/matches` shows compact open match IDs.
-- `/predict` -> choose open match. The default list is the union of 5 nearest matches and all matches from the 3 nearest match days; a button can open all matches from the nearest tour.
-- Enter 7 unique scores, comma-separated: `1-0,1-1,2-0,0-0,2-1,1-2,0-1`.
-- Choose one G+A author from team 1 active roster, sorted by G+A priority.
-- Choose one G+A author from team 2 active roster, sorted by G+A priority.
-- Confirm save.
-- `/my` shows latest predictions.
-- `/help` shows rules.
-- `/rules` shows detailed rules.
-- `/authors MATCH_ID | Автор1 | Автор2` updates only G+A authors for an existing prediction before deadline.
+```text
+ADMIN_USERNAMES=organizer_username
+OPEN_REGISTRATION_ENABLED=false
+ALLOWED_USERNAMES=
+APP_TZ=Europe/Moscow
+CACHE_TTL_SECONDS=60
+DRAFT_TTL_SECONDS=1800
+```
 
-## Access Modes
+See [`DEPLOY.md`](./DEPLOY.md) for the VM and `systemd` deployment workflow, and [`ORGANIZER_GUIDE.md`](./ORGANIZER_GUIDE.md) for result entry and tournament operations.
 
-- Invite/PIN mode: participants bind through `/start PIN`.
-- Test allowlist mode: set `OPEN_REGISTRATION_ENABLED=true` and `ALLOWED_USERNAMES=user1,user2`.
-- If `ALLOWED_USERNAMES` is set, only listed Telegram usernames can auto-register without PIN.
-- Users outside the list get a message asking them to contact the organizer.
+## Tests
 
-Admin:
-
-- `/publish MATCH_ID` publishes closed predictions to `TOURNAMENT_CHAT_ID` after deadline and marks latest rows locked.
-- `/status MATCH_ID` shows submitted/missing participants for a match.
-- `/score MATCH_ID` recalculates scoring for one match; `/score all` recalculates all filled results.
-- `/score` updates `scoring`, `leaderboard`, metric leaderboards, author-pick analytics, and first-score belief analytics.
-- `/leaderboard` publishes `leaderboard` sheet if it is filled.
-- Daily notifications are sent at 12:00 MSK to users who have already submitted at least one prediction when there are open matches in the next 24 hours.
-
-## Validation
-
-Hard server-side checks:
-
-- bound participant only;
-- match exists and deadline is not passed;
-- exactly 7 scores;
-- unique score options;
-- score format `N-N` or `N:N`;
-- author is in the active roster for the correct team;
-- direct `/submit` and `/authors` player typos are rejected with roster-based suggestions;
-- G+A authors inside one prediction must be distinct;
-- selected author was not already used by the same participant in other latest predictions.
-- results with status `cancelled`, `technical`, or `void` are ignored in scoring;
-- own goals do not give author points.
-- scoring increases from 1/8 onward and leaderboard ties are sorted by later-stage points: final, third place, semifinal, quarterfinal, round16, round32, group.
-
-## Smoke Tests
+Run the test suite without Telegram or Google credentials:
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests
 ```
 
-Current local smoke uses `FakeRepository`, so it does not need Telegram or Google secrets.
+The tests use `FakeRepository` to cover the application flow without external services. A complete manual scenario is documented in [`SMOKE_TEST_SCENARIO.md`](./SMOKE_TEST_SCENARIO.md).
+
+## Privacy and Secrets
+
+Participant-level data, Telegram exports, Google Sheets content, local outputs, and credentials are excluded from version control. Never commit `.env`, bot tokens, or service-account files.
