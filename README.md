@@ -11,8 +11,31 @@ The repo is intentionally small: formalized docs, reproducible notebooks, and lo
 
 | Project | Notebook | Docs |
 |---|---|---|
-| 7-40 | `notebooks/7_40_framework.ipynb` | `docs/7-40.md` |
+| 7-40 | `notebooks/7_40_framework.ipynb` | `docs/7-40.md`, `docs/7-40-pipeline.md` |
 | Так или иначе | `notebooks/tak_ili_inache_framework.ipynb` | `docs/tak_ili_inache.md` |
+
+## 7-40 Parser
+
+Reusable local pipeline:
+
+```bash
+MPLCONFIGDIR=output/7_40_analysis/.mpl \
+python scripts/analyze_7_40.py --days 14 --out-dir output/7_40_analysis
+```
+
+Full local run:
+
+```bash
+MPLCONFIGDIR=output/7_40_analysis/.mpl \
+python scripts/analyze_7_40.py --out-dir output/7_40_analysis/full_dataset --backup-results
+```
+
+The script has two framework layers:
+
+- public blog/channel statistics parser;
+- team-chat preview and recommendation parser.
+
+See `docs/7-40-pipeline.md` for setup, inputs, outputs, current parser quality, and next steps.
 
 ## Local Setup
 
@@ -34,6 +57,6 @@ Commit only reusable code, notebooks, and documentation unless explicitly decide
 
 ## Current Status
 
+- 7-40 has a working local parser/visualization pipeline for Telegram exports.
 - Initial notebooks run on mock data.
-- Real Telegram exports, odds snapshots, player TXT inputs, and target Excel examples are still needed for calibration.
-
+- `Так или иначе` still needs real TXT/Excel examples for calibration.
